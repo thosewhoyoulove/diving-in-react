@@ -70,6 +70,7 @@ const chapters = [
 ];
 
 export default defineConfig({
+  base: '/diving-in-react/',
   lang: 'zh-CN',
   title: '深入浅出 React',
   description: '从直觉、机制到源码，系统理解 React 18/19。',
