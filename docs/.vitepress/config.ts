@@ -67,6 +67,26 @@ const chapters = [
       { text: '第 26 章 综合项目：SSE 流式 AI Agent', link: '/chapters/26-ai-agent' },
     ],
   },
+  {
+    text: '第九部分：React 19 与全栈渲染',
+    items: [
+      { text: '第 27 章 React 19 的 Actions 与乐观更新', link: '/chapters/27-actions' },
+      { text: '第 28 章 SSR、Streaming SSR、Hydration 与 Server Components', link: '/chapters/28-ssr-rsc' },
+      { text: '第 29 章 React Compiler、自动记忆化与手动优化', link: '/chapters/29-compiler' },
+      { text: '第 30 章 React 数据获取、缓存一致性与服务端状态架构', link: '/chapters/30-data-fetching' },
+    ],
+  },
+  {
+    text: '第十部分：复杂交互与前端基础设施',
+    items: [
+      { text: '第 31 章 React 表单、校验与复杂提交', link: '/chapters/31-forms' },
+      { text: '第 32 章 React 可访问性与键盘交互', link: '/chapters/32-accessibility' },
+      { text: '第 33 章 React 设计系统与业务组件复用', link: '/chapters/33-design-system' },
+      { text: '第 34 章 Web Worker、SharedWorker 与 React 高负载任务', link: '/chapters/34-workers' },
+      { text: '第 35 章 React 离线能力、PWA 与冲突处理', link: '/chapters/35-offline' },
+      { text: '第 36 章 React 可观测性、错误监控与线上性能治理', link: '/chapters/36-observability' },
+    ],
+  },
 ];
 
 export default defineConfig({
