@@ -102,7 +102,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '目录', link: '/guide/' },
-      { text: '第 1 章', link: '/chapters/01-why-react' },
+      { text: '开始阅读', link: '/chapters/01-why-react' },
     ],
     sidebar: chapters,
     outline: { level: [2, 3], label: '本页目录' },
@@ -111,7 +111,33 @@ export default defineConfig({
       next: '下一章',
     },
     socialLinks: [],
-    search: { provider: 'local' },
+    search: {
+      provider: 'local',
+      options: {
+        detailedView: 'auto',
+        translations: {
+          button: {
+            buttonText: '搜索全书',
+            buttonAriaLabel: '搜索全书',
+          },
+          modal: {
+            displayDetails: '显示详细结果',
+            resetButtonTitle: '清除搜索',
+            backButtonTitle: '关闭搜索',
+            noResultsText: '没有找到相关内容',
+            footer: {
+              selectText: '选择',
+              selectKeyAriaLabel: '回车',
+              navigateText: '导航',
+              navigateUpKeyAriaLabel: '上箭头',
+              navigateDownKeyAriaLabel: '下箭头',
+              closeText: '关闭',
+              closeKeyAriaLabel: 'Esc',
+            },
+          },
+        },
+      },
+    },
     footer: {
       message: '用运行机制理解 React，用工程实践验证 React。',
       copyright: '《深入浅出 React》学习笔记',

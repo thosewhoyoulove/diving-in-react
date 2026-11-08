@@ -29,14 +29,14 @@ onMounted(() => {
 </script>
 
 <div class="book-intro">
-  <p class="book-intro__lead">一套为复杂业务和高级面试准备的 React 学习路线。</p>
+  <p class="book-intro__lead">一套为复杂业务和高级面试准备的 React 运行机制学习路线。</p>
   <div class="book-intro__grid">
     <div>
-      <span>26</span>
+      <span>36</span>
       <small>个章节</small>
     </div>
     <div>
-      <span>8</span>
+      <span>10</span>
       <small>个知识部分</small>
     </div>
     <div>
