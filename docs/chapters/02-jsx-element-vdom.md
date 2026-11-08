@@ -241,7 +241,7 @@ function Button() {
 <Button />
 ```
 
-::: warning 容易混淆
+::: confuse 容易混淆
 组件名称首字母大写不是装饰性写法，而是 JSX 语法区分组件和原生元素的重要规则。
 :::
 
@@ -363,7 +363,7 @@ const element = React.createElement('button', null, '保存');
 createRoot(container).render(element);
 ```
 
-::: tip 面试重点
+::: interview 面试重点
 `React.createElement` 的主要作用是创建 React Element，而不是直接创建真实 DOM。真实 DOM 的创建和更新发生在 ReactDOM 的协调与 Commit 过程中。
 :::
 
@@ -411,7 +411,7 @@ type SimplifiedReactElement = {
 
 它是 React 内部实现细节，业务代码不应该依赖具体 Symbol 值。
 
-::: info 版本说明
+::: note 版本说明
 在 React 18 中，常见的 Element 类型标记是 `Symbol.for('react.element')`。React 19 内部引入了与新 Element 语义相关的类型标记，具体 Symbol 名称属于实现细节。面试中应回答“使用内部 Symbol 标识 React Element”，不要把某个具体 Symbol 当成长期稳定 API。
 :::
 
@@ -686,7 +686,7 @@ const element = jsxs('section', {
 - 开发和生产可以使用不同的 Runtime 辅助函数；
 - 将 JSX 语法和 React 默认导入解耦。
 
-::: info 版本说明
+::: note 版本说明
 新的 JSX Transform 是 React 17 引入的能力，React 18/19 项目普遍使用自动 Runtime。是否使用自动 Runtime 仍然取决于构建工具和 TypeScript、Babel 或 SWC 配置。
 :::
 
@@ -1138,7 +1138,7 @@ Fiber：React 内部管理更新工作的数据结构
 真实 DOM：浏览器中的实际节点
 ```
 
-::: tip 面试重点
+::: interview 面试重点
 不要回答“Fiber 就是虚拟 DOM”。更准确的回答是：React Element 是界面描述，虚拟 DOM 是对这类中间描述和协调思想的泛称，Fiber 是 React 用于实现协调、状态保存、优先级和可中断工作的内部数据结构。
 :::
 

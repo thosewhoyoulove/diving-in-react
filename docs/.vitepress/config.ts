@@ -1,3 +1,4 @@
+import container from 'markdown-it-container';
 import { defineConfig } from 'vitepress';
 
 const chapters = [
@@ -89,7 +90,35 @@ const chapters = [
   },
 ];
 
+const customContainerTitles = {
+  interview: '面试重点',
+  confuse: '容易混淆',
+  source: '源码视角',
+  practice: '工程实践',
+  note: '版本说明',
+};
+
+function configureCustomContainers(md: { use: (plugin: unknown, name: string, options: unknown) => void }) {
+  Object.entries(customContainerTitles).forEach(([type, defaultTitle]) => {
+    md.use(container, type, {
+      render(tokens: Array<{ nesting: number; info: string }>, index: number) {
+        const token = tokens[index];
+
+        if (token.nesting === 1) {
+          const title = token.info.trim().slice(type.length).trim() || defaultTitle;
+          return `<div class="custom-block ${type}"><p class="custom-block-title">${title}</p>\n`;
+        }
+
+        return '</div>\n';
+      },
+    });
+  });
+}
+
 export default defineConfig({
+  markdown: {
+    config: configureCustomContainers,
+  },
   base: '/diving-in-react/',
   lang: 'zh-CN',
   title: '深入浅出 React',
@@ -103,14 +132,29 @@ export default defineConfig({
       { text: '首页', link: '/' },
       { text: '目录', link: '/guide/' },
       { text: '开始阅读', link: '/chapters/01-why-react' },
+      { text: 'GitHub', link: 'https://github.com/thosewhoyoulove/diving-in-react', target: '_blank', rel: 'noopener' },
     ],
     sidebar: chapters,
     outline: { level: [2, 3], label: '本页目录' },
+    lastUpdated: {
+      text: '最后更新于',
+      formatOptions: {
+        dateStyle: 'long',
+        timeStyle: 'short',
+        forceLocale: true,
+      },
+    },
     docFooter: {
       prev: '上一章',
       next: '下一章',
     },
-    socialLinks: [],
+    socialLinks: [
+      {
+        icon: 'github',
+        link: 'https://github.com/thosewhoyoulove/diving-in-react',
+        ariaLabel: 'GitHub',
+      },
+    ],
     search: {
       provider: 'local',
       options: {

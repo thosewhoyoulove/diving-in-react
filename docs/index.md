@@ -4,6 +4,10 @@ hero:
   name: 深入浅出 React
   text: 从直觉、机制到源码
   tagline: 面向有前端经验的开发者，系统理解 React 18/19、Fiber、Hooks、并发渲染、状态管理与性能优化。
+  image:
+    light: /update-stages-light.svg
+    dark: /update-stages-dark.svg
+    alt: React 从更新触发到浏览器绘制的流程示意图
   actions:
     - theme: brand
       text: 开始阅读
@@ -29,7 +33,28 @@ onMounted(() => {
 </script>
 
 <div class="book-intro">
-  <p class="book-intro__lead">一套为复杂业务和高级面试准备的 React 运行机制学习路线。</p>
+  <div class="book-intro__header">
+    <p class="book-intro__eyebrow">React / 运行模型</p>
+    <h2>把页面行为还原成运行模型。</h2>
+    <p class="book-intro__lead">从组件执行到 Fiber 调度，从状态更新到线上性能，把每天都在使用的 React 拆成可以观察、解释和迁移的工程知识。</p>
+  </div>
+
+  <div class="book-intro__panel" aria-label="React 更新流程">
+    <div class="book-intro__panel-top">
+      <span>更新流程</span>
+      <span>React 18 / 19</span>
+    </div>
+    <div class="book-intro__flow">
+      <span>触发更新</span>
+      <b>→</b>
+      <span>Render</span>
+      <b>→</b>
+      <span>Commit</span>
+      <b>→</b>
+      <span>浏览器绘制</span>
+    </div>
+  </div>
+
   <div class="book-intro__grid">
     <div>
       <span>36</span>
