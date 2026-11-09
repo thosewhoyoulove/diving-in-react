@@ -374,6 +374,21 @@ Root 接收 React Element
 
 ## 3.4 `createRoot` 到底做了什么
 
+从源码视角看，`createRoot` 先建立 FiberRoot 和 HostRoot，再把容器交给 Root 管理。首次挂载的调用关系如下：
+
+```mermaid
+flowchart TD
+  A[createRoot(container)] --> B[校验 DOM 容器]
+  B --> C[创建 FiberRoot]
+  C --> D[创建 HostRoot Fiber]
+  D --> E[建立 current 连接]
+  E --> F[返回 Root 控制对象]
+  F --> G[root.render(element)]
+  G --> H[创建根更新并调度]
+```
+
+输入是 DOM 容器，处理过程是创建根级管理对象并建立 current 关系，输出是可以接收 `render` 调用的 Root。`createRoot` 本身不等于执行 App，也不直接创建最终 DOM。
+
 从源码视角看，`createRoot` 可以拆成几个重要步骤。下面是经过简化的概念流程：
 
 ```text

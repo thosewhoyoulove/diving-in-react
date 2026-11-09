@@ -168,6 +168,17 @@ SSR 生成 HTML，Server Components 传递组件结果和数据边界；一个�
 
 ## 28.7 源码视角：服务端和客户端的职责
 
+```mermaid
+flowchart LR
+  A[服务端组件] --> B[服务端生成 HTML / Flight 数据]
+  B --> C[浏览器接收响应]
+  C --> D[客户端 Hydration 或 RSC 解码]
+  D --> E[建立客户端 Fiber]
+  E --> F[事件和 State 接管交互]
+```
+
+输入是服务端组件树和请求数据，处理过程是服务端输出可传输结果、客户端恢复边界并建立交互能力，输出是首屏内容和可操作的客户端组件。服务端 Render、Hydration 和客户端更新属于不同阶段，不能混成一次普通 CSR Render。
+
 ```text
 服务器
   -> 执行服务端组件或普通组件

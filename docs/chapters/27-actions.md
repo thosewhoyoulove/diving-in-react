@@ -169,6 +169,20 @@ function Comments({ initial }: { initial: Comment[] }) {
 
 ## 27.5 源码视角：Action 仍然通过更新调度
 
+```mermaid
+flowchart TD
+  A[表单提交] --> B[Action 开始]
+  B --> C[pending 状态进入 React]
+  C --> D[执行异步工作]
+  D --> E{请求结果}
+  E -->|成功| F[提交结果状态]
+  E -->|失败| G[提交错误状态]
+  F --> H[Render / Commit]
+  G --> H
+```
+
+输入是表单提交和 Action 函数，处理过程是管理 pending、结果和错误的更新，输出是新的 UI 状态。Action 减少了重复的交互状态代码，但服务端校验、幂等和回滚仍然需要业务协议。
+
 从机制上看，React 并没有跳过更新链路：
 
 ```text

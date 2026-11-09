@@ -1459,7 +1459,58 @@ renderRootConcurrent 或 renderRootSync
 执行 Render
 ```
 
-### 7.15.2 从 Render 进入树遍历
+### 7.15.2 从更新到 Fiber 的数据流
+
+```mermaid
+flowchart TD
+  A[dispatchSetState] --> B[requestUpdateLane]
+  B --> C[标记当前 Fiber 的 lanes]
+  C --> D[沿 return 指针找到 FiberRoot]
+  D --> E[Root.pendingLanes 加入当前 Lane]
+  E --> F[ensureRootIsScheduled]
+  F --> G[创建 WorkInProgress 树]
+  G --> H[beginWork 向下计算]
+  H --> I[completeWork 向上收集 flags]
+  I --> J{Render 是否完成}
+  J -->|暂停或重启| G
+  J -->|完成| K[commitRoot]
+  K --> L[修改宿主 DOM]
+```
+
+一次更新中，`current` 树仍然代表用户正在看到的结果，`workInProgress` 树负责计算下一版结果。Render 被暂停时，React 可以保留或重建工作树；只有 Commit 完成后，下一版结果才会成为用户可见状态。
+
+```mermaid
+classDiagram
+  class FiberRoot {
+    current
+    pendingLanes
+    callbackNode
+  }
+
+  class Fiber {
+    tag
+    memoizedState
+    lanes
+    child
+    sibling
+    return
+    alternate
+    flags
+  }
+
+  class HostNode {
+    domNode
+  }
+
+  FiberRoot --> Fiber : current
+  Fiber --> Fiber : alternate
+  Fiber --> Fiber : child / sibling / return
+  Fiber --> HostNode : stateNode
+```
+
+`alternate` 连接 current Fiber 和 WorkInProgress Fiber，`flags` 记录 Render 阶段计算出的提交计划，`stateNode` 在宿主节点 Fiber 上连接真实 DOM。它们分别承担树版本、提交计划和宿主对象连接三个职责。
+
+### 7.15.3 从 Render 进入树遍历
 
 Render 内部可以关注：
 
@@ -1480,7 +1531,7 @@ completeWork
 - 什么时候移动到兄弟节点？
 - 什么时候 Render 完成？
 
-### 7.15.3 从 Commit 进入 DOM 更新
+### 7.15.4 从 Commit 进入 DOM 更新
 
 Commit 阶段可以关注：
 
@@ -1506,7 +1557,7 @@ Passive Effects
 
 实际内部流程会根据 React 版本、Effect 类型和更新情况有所变化。
 
-### 7.15.4 源码阅读顺序
+### 7.15.5 源码阅读顺序
 
 推荐按照下面的顺序阅读：
 

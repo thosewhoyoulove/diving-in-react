@@ -147,6 +147,18 @@ Context 负责主题状态，CSS 变量负责大范围样式切换。不要让�
 
 ## 33.7 源码视角：组件复用的边界
 
+```mermaid
+flowchart TD
+  A[业务需求] --> B[组件 API 和语义]
+  B --> C[设计 Token]
+  C --> D[基础组件 Render]
+  D --> E[业务组合组件]
+  E --> F[Props / Context / State 更新]
+  F --> G[局部 Fiber Render 和 Commit]
+```
+
+输入是业务场景、设计 Token 和组件参数，处理过程是把稳定语义封装在基础组件中，再通过组合扩展业务能力，输出是可复用且可访问的 UI。组件复用的边界应由行为和状态所有权决定，不能只由视觉相似度决定。
+
 ```text
 设计 Token
   -> CSS 变量 / 主题

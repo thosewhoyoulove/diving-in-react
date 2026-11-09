@@ -1396,6 +1396,40 @@ Lane 是什么类型
 如何合并和移除
 ```
 
+### 10.19.2.1 Root 如何选择下一组 Lane
+
+```mermaid
+flowchart TD
+  A[Update 携带 Lane 进入 Root] --> B[markRootUpdated]
+  B --> C[Root.pendingLanes 加入 Lane]
+  C --> D[getNextLanes]
+  D --> E{存在 expiredLanes?}
+  E -->|是| F[优先选择过期工作]
+  E -->|否| G{存在未挂起的高优先级工作?}
+  G -->|是| H[选择最高优先级 Lane 集合]
+  G -->|否| I{存在 pinged 或 retry 工作?}
+  I -->|是| J[选择可恢复工作]
+  I -->|否| K[暂时没有可执行工作]
+  F --> L[ensureRootIsScheduled]
+  H --> L
+  J --> L
+  L --> M[同步或并发 Render]
+```
+
+具体 Lane 位图会随 React 版本变化，但数据流相对稳定：Update 先进入 Root 的待处理集合，`getNextLanes` 结合挂起、过期、重试和关联状态选择工作，Scheduler 再决定以同步任务还是并发任务执行。
+
+一次选择可以记录为：
+
+```text
+Root.pendingLanes = SyncLane | TransitionLane
+Root.suspendedLanes = TransitionLane
+当前输入到达：加入 SyncLane
+getNextLanes：选择 SyncLane
+Render：先处理输入更新，TransitionLane 继续保留
+输入提交：移除已完成的 SyncLane
+后续恢复：重新选择 TransitionLane
+```
+
 ### 10.19.2 从更新到 Lane
 
 ```text

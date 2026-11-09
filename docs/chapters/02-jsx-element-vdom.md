@@ -1515,6 +1515,19 @@ Key 的详细 Diff 行为会在第 9 章分析。
 
 ### 源码视角
 
+JSX 的源码入口可以按“描述创建、节点协调、宿主提交”三层理解：
+
+```mermaid
+flowchart TD
+  A[JSX] --> B[jsx / createElement]
+  B --> C[React Element]
+  C --> D[reconcileChildren]
+  D --> E[复用或创建 Fiber]
+  E --> F[Commit Host 节点]
+```
+
+输入是 JSX 编译产物和 Props，处理过程是生成不可变 Element，再由 Reconciler 根据类型和 key 建立 Fiber，输出是可提交的宿主节点更新。React Element 不是 DOM，也不是长期保存的组件实例；Fiber 才是跨 Render 保存工作和 State 关联的内部节点。
+
 以下内容属于 React 18/19 当前实现中的内部细节：
 
 - Element 对象的具体字段布局；

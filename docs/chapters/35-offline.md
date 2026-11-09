@@ -142,6 +142,22 @@ async function saveNote(note: Note, mutationId: string) {
 
 ## 35.7 源码视角：离线更新仍回到 React
 
+```mermaid
+flowchart TD
+  A[用户离线操作] --> B[更新本地 UI]
+  B --> C[写入本地操作队列]
+  C --> D{网络恢复}
+  D -->|否| E[继续显示待同步状态]
+  D -->|是| F[按顺序同步并处理重试]
+  F --> G{服务端冲突?}
+  G -->|是| H[冲突合并或请求用户决策]
+  G -->|否| I[确认服务端结果]
+  H --> J[更新缓存和 React State]
+  I --> J
+```
+
+输入是离线操作和网络状态，处理过程是本地持久化、重试、幂等同步和冲突处理，输出是与服务端确认后的 UI。乐观显示可以改善反馈，但本地状态不能代替服务端事实来源。
+
 ```text
 IndexedDB / Service Worker
   -> 读取本地快照或同步事件

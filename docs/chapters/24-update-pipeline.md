@@ -82,7 +82,42 @@ export function Counter() {
 
 开发环境使用 Strict Mode 时，部分 Render 和 Effect 可能被额外执行来暴露不纯逻辑。不要用一次开发日志顺序推断所有生产场景。
 
-## 24.3 第一步：事件处理函数调用 `setState`
+## 24.3 一张完整链路图
+
+```mermaid
+sequenceDiagram
+  participant User as 用户
+  participant Event as React 事件系统
+  participant Hook as Hook 队列
+  participant Root as FiberRoot
+  participant Render as Render 阶段
+  participant Commit as Commit 阶段
+  participant DOM as 浏览器 DOM
+
+  User->>Event: click
+  Event->>Hook: 调用 dispatch(action)
+  Hook->>Hook: 创建 Update 并记录 Lane
+  Hook->>Root: 标记 pendingLanes
+  Root->>Render: 选择工作并执行 Fiber 遍历
+  Render->>Render: beginWork / completeWork
+  Render->>Commit: 提交完成的 WorkInProgress 树
+  Commit->>DOM: 插入、删除或更新节点
+  DOM-->>User: 浏览器绘制新界面
+```
+
+这张图把“谁调用谁”和“哪个阶段修改什么”分开表示：事件系统只负责把用户动作送进 React，Hook 队列负责保存更新，Root 负责调度，Render 负责计算，Commit 负责修改宿主环境。
+
+一次 `setCount((value) => value + 1)` 的状态变化可以压缩成：
+
+```text
+事件前：Hook.memoizedState = 0，Root.pendingLanes = NoLanes
+调用后：Hook.queue.pending = Update(action, lane)
+调度后：Root.pendingLanes 包含该 lane
+Render 后：Hook.memoizedState = 1，WorkInProgress 文本为 "1"
+Commit 后：DOM 文本从 "0" 更新为 "1"
+```
+
+## 24.4 第一步：事件处理函数调用 `setState`
 
 浏览器先触发真实 DOM 事件，React 的事件系统把它转交给组件上的事件处理函数：
 
@@ -113,7 +148,7 @@ if (count === 0) setCount(1);
 
 某些受控场景允许在特殊条件下调整状态，但业务代码应优先把更新放在事件、Effect 或明确的外部 Store 回调中。
 
-## 24.4 第二步：创建 Update 并加入队列
+## 24.5 第二步：创建 Update 并加入队列
 
 调用 `setCount` 时，React 不会立刻把组件函数执行结果写入 DOM，而是创建一条 Update：
 
@@ -147,7 +182,7 @@ setCount((value) => value + 1);
 
 如果写成 `setCount(count + 1)`，两个表达式可能都捕获同一次 Render 中的 `count`，因此得到同一个目标值。函数式更新适合依赖前一个状态的连续操作。
 
-## 24.5 第三步：选择 Lane 并调度 Root
+## 24.6 第三步：选择 Lane 并调度 Root
 
 ### 24.5.1 Lane 表示更新优先级
 
@@ -200,7 +235,7 @@ React DOM：如何把最终结果应用到浏览器
 
 Scheduler 负责任务安排和让出执行机会，Fiber 把树遍历拆成可保存的工作单元，Reconciler 根据新旧树计算变化，Host Config 负责 DOM 操作。它们协作，但职责不同。
 
-## 24.6 第四步：Render 阶段计算新树
+## 24.7 第四步：Render 阶段计算新树
 
 Render 阶段从 Root 开始遍历 Fiber：
 
@@ -239,7 +274,7 @@ renderRoot
 
 如果 Render 发现更高优先级工作到达，并发模式可以暂停当前树，把尚未完成的工作保留到之后继续。因为此时还没有把结果应用到真实 DOM，所以暂停不会留下半棵新树。
 
-## 24.7 第五步：Commit 阶段应用结果
+## 24.8 第五步：Commit 阶段应用结果
 
 当 Render 得到可提交的工作树后，React 进入 Commit：
 
@@ -290,7 +325,7 @@ useEffect(() => {
 
 当依赖改变时，旧清理函数先断开旧连接，再建立新连接；组件卸载时执行最终清理。Effect 不应该被当作“每次组件显示后都执行的生命周期函数”，它表达的是与外部系统同步。
 
-## 24.8 批量更新的执行过程
+## 24.9 批量更新的执行过程
 
 ```tsx
 function Form() {
@@ -319,7 +354,7 @@ inputRef.current?.focus();
 
 `flushSync` 应限制在少数需要同步布局的交互中，不能作为普通更新方式。
 
-## 24.9 业务场景：保存表单并刷新列表
+## 24.10 业务场景：保存表单并刷新列表
 
 ```tsx
 type SaveState =
@@ -366,7 +401,7 @@ function Editor({ onSaved }: { onSaved: (id: string) => void }) {
 
 业务上还需要处理重复提交、页面离开、请求取消和服务端返回的字段错误。React 更新链路只能保证 State 到 UI 的计算，不能自动保证网络请求的业务一致性。
 
-## 24.10 常见错误和错误写法
+## 24.11 常见错误和错误写法
 
 ### 错误一：认为 `setState` 直接修改变量
 
@@ -395,7 +430,7 @@ useEffect(() => {
 
 Transition 只改变 React 更新优先级，输入停止后仍可能没有等待时间。减少请求应使用防抖、取消或服务端缓存。
 
-## 24.11 源码验证方式
+## 24.12 源码验证方式
 
 可以通过三层证据验证更新链路：
 
@@ -405,11 +440,11 @@ Transition 只改变 React 更新优先级，输入停止后仍可能没有等�
 
 源码阅读时，从 `dispatchSetState`、`scheduleUpdateOnFiber`、`renderRoot`、`beginWork`、`completeWork` 和 `commitRoot` 这些概念入口开始，再根据当前 React 版本寻找对应实现。函数名可能变化，但“入队—调度—计算—提交”的结构是主线。
 
-## 24.12 面试重点：标准回答
+## 24.13 面试重点：标准回答
 
 > 用户触发事件后，事件处理函数调用 State Setter。React 为这次更新创建 Update，放入对应 Hook 的更新队列，并根据更新来源分配 Lane，再从 Fiber Root 调度工作。Render 阶段 React 遍历 Fiber，执行组件、处理 Hook 和 Reconciliation，构建新的 workInProgress 树，这个阶段在并发模式下可以被中断和重做。得到一致结果后进入 Commit，React 执行 DOM 插入、删除和属性更新，然后运行 Layout Effect，并在之后调度 Passive Effect。`setState` 是安排更新，不是立即修改当前 Render 中的变量。
 
-## 24.13 面试官可能继续追问
+## 24.14 面试官可能继续追问
 
 1. 为什么 Render 可以中断，Commit 不应该随意中断？
 2. 多个 `setState` 为什么有时只触发一次 Commit？
@@ -418,7 +453,7 @@ Transition 只改变 React 更新优先级，输入停止后仍可能没有等�
 5. 如果旧请求在新请求之后返回，React 会自动阻止它吗？
 6. Fiber 和 Scheduler 的职责如何区分？
 
-## 24.14 练习题与参考答案
+## 24.15 练习题与参考答案
 
 ### 练习题 1
 

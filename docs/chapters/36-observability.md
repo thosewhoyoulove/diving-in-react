@@ -149,6 +149,21 @@ requestAnimationFrame(() => {
 
 ## 36.7 源码视角：错误和性能信号的位置
 
+```mermaid
+flowchart LR
+  A[用户操作或请求] --> B[组件 Render]
+  B --> C{异常或长任务?}
+  C -->|异常| D[Error Boundary / 全局错误入口]
+  C -->|正常| E[Commit 和浏览器绘制]
+  E --> F[Profiler / Performance 信号]
+  D --> G[记录错误上下文]
+  F --> H[关联交互和版本]
+  G --> I[监控平台]
+  H --> I
+```
+
+输入是组件错误、网络错误和性能事件，处理过程是捕获、补充路由和版本上下文并上传信号，输出是可以定位用户影响的观测记录。错误边界负责 React 子树错误，网络和 Worker 错误需要各自的边界与关联 ID。
+
 ```text
 事件 / Render / Commit / 网络
   -> 应用层边界捕获

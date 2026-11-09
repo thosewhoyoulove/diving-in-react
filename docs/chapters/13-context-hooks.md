@@ -29,6 +29,19 @@ Context 不是全局变量，也不是自动优化工具。Provider 的 `value` 
 
 ## 13.1 源码模型：Context 如何穿过组件树
 
+Context 的源码模型包含 Provider 当前值和消费者依赖记录两个部分。
+
+```mermaid
+flowchart TD
+  A[Provider value 改变] --> B[更新 Context 当前值]
+  B --> C[遍历依赖该 Context 的 Fiber]
+  C --> D[标记消费者更新]
+  D --> E[调度相关 Root]
+  E --> F[消费者 Render]
+```
+
+输入是 Provider 的新值，处理过程是更新值并标记依赖消费者，输出是消费者读取到的新快照。依赖记录让 Context 更新可以绕过没有直接传 Props 的中间组件。
+
 ### 13.1.1 `createContext` 保存当前 Provider 的值
 
 可以把 Context 简化成一个带 Provider 和 Consumer 关系的对象：

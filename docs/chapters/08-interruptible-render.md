@@ -966,7 +966,37 @@ renderRootSync
 workLoopSync
 ```
 
-### 8.13.2 `performConcurrentWorkOnRoot`
+### 8.13.2 一次可中断 Render 的状态变化
+
+```mermaid
+flowchart TD
+  A[Root 任务开始] --> B[选择 nextLanes]
+  B --> C[创建 WorkInProgress 树]
+  C --> D[workLoopConcurrent 处理 Fiber]
+  D --> E{shouldYield?}
+  E -->|是| F[保存当前工作单元]
+  F --> G[把控制权交还浏览器]
+  G --> H[稍后恢复 Root 任务]
+  H --> D
+  E -->|否| I{Render 完成?}
+  I -->|否| D
+  I -->|是| J[Commit 整棵结果树]
+```
+
+暂停发生在 Render 工作单元之间，已经提交的 DOM 不会被并发 Render 改成半新半旧。恢复时 React 还要重新检查 Root 上是否出现了更高优先级的 Lane；如果出现，当前工作可能被重启或改选。
+
+一次过程可以记录为：
+
+```text
+开始：Root.pendingLanes = TransitionLane
+处理：完成 Header，当前指针停在 ResultList
+让出：WorkInProgress 保留，current DOM 仍是旧结果
+插入输入更新：Root.pendingLanes 同时包含 SyncLane
+恢复：优先完成 SyncLane，再继续或重做 TransitionLane
+提交：只提交完成且通过一致性检查的结果
+```
+
+### 8.13.3 `performConcurrentWorkOnRoot`
 
 这个入口需要处理：
 
@@ -994,7 +1024,7 @@ function performConcurrentWorkOnRoot(root: FiberRoot) {
 
 真实逻辑还会处理 Suspense、错误、恢复、Passive Effects 和优先级变化。
 
-### 8.13.3 `renderRootConcurrent`
+### 8.13.4 `renderRootConcurrent`
 
 ```ts
 function renderRootConcurrent(root: FiberRoot, lanes: Lanes) {
@@ -1023,7 +1053,7 @@ function renderRootConcurrent(root: FiberRoot, lanes: Lanes) {
 根据完成、暂停或错误返回状态
 ```
 
-### 8.13.4 `shouldYieldToHost`
+### 8.13.5 `shouldYieldToHost`
 
 Scheduler 内部通常会有判断是否让出宿主环境的逻辑，名称可能类似：
 
@@ -1040,7 +1070,7 @@ requestHostCallback
 - `shouldYield` 只表示当前是否适合继续执行一段工作；
 - 是否重新开始 Render 还取决于 Root 上的更新和树状态。
 
-### 8.13.5 版本差异
+### 8.13.6 版本差异
 
 React 18/19 的并发实现会持续演进：
 

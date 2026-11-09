@@ -34,6 +34,20 @@ outline: deep
 
 ## 14.1 源码模型：一次状态更新如何传播
 
+局部 State 的传播路径把 Hook、Fiber 和 Root 连接起来：
+
+```mermaid
+flowchart LR
+  A[事件处理函数] --> B[dispatch action]
+  B --> C[Hook queue.pending]
+  C --> D[Fiber.lanes]
+  D --> E[Root.pendingLanes]
+  E --> F[Render 计算新状态]
+  F --> G[Commit 页面结果]
+```
+
+输入是组件事件产生的 Action，处理过程是入队、标记优先级并向上找到 Root，输出是订阅该状态的组件得到新 UI。状态提升或放入外部 Store 会改变队列和订阅范围，但不会改变“变化需要进入 React 更新流程”这一主线。
+
 ### 14.1.1 局部 State 的更新链路
 
 ```text

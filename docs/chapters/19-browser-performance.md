@@ -28,6 +28,20 @@ React 的 Commit 结束后，浏览器还要完成样式计算、布局、绘制
 
 ## 19.1 源码模型：React Commit 后发生什么
 
+React Commit 完成后，浏览器仍然需要处理样式、布局、绘制和合成：
+
+```mermaid
+flowchart TD
+  A[React Render] --> B[Commit Mutation]
+  B --> C[DOM 属性或节点变化]
+  C --> D[样式计算]
+  D --> E[布局 Layout]
+  E --> F[绘制 Paint]
+  F --> G[合成 Composite]
+```
+
+输入是 Commit 阶段的宿主修改，处理过程是浏览器根据 DOM 和 CSS 重新计算视觉结果，输出是屏幕上的一帧。源码阅读不能把 React Render 时间等同于用户看到的完整响应时间。
+
 一次典型的更新可以表示为：
 
 ```text

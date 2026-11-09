@@ -29,6 +29,20 @@ outline: deep
 
 ## 21.1 源码模型：URL 如何变成组件树
 
+路由更新本质上是外部 URL 变化进入 React 状态和组件匹配流程：
+
+```mermaid
+flowchart TD
+  A[点击链接或 History API] --> B[读取 location]
+  B --> C[Router 更新 location state]
+  C --> D[匹配 route tree]
+  D --> E[渲染路由组件]
+  E --> F[权限边界和数据加载]
+  F --> G[Commit 页面]
+```
+
+输入是 URL 和导航事件，处理过程是生成匹配结果并触发相关状态更新，输出是新的路由组件树。浏览器 History API 自身不会执行 React Render，Router 才把地址变化接入 React。
+
 ### 21.1.1 浏览器导航事件
 
 ```text

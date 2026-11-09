@@ -161,6 +161,17 @@ function Menu({ items }: { items: string[] }) {
 
 ## 32.7 源码视角：属性最终进入 DOM
 
+```mermaid
+flowchart LR
+  A[组件 Props] --> B[React Element props]
+  B --> C[HostComponent Fiber]
+  C --> D[diffProperties]
+  D --> E[Commit 更新 DOM 属性]
+  E --> F[浏览器辅助技术读取语义]
+```
+
+输入是组件属性和交互状态，处理过程是协调前后 Props 并在 Commit 阶段设置 DOM 属性，输出是浏览器和辅助技术可以读取的语义状态。`aria-*`、键盘事件、焦点和原生元素选择都属于最终用户行为的一部分。
+
 ```text
 JSX aria-label / disabled
   -> React Element props

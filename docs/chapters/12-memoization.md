@@ -30,6 +30,23 @@ outline: deep
 
 ## 12.1 源码模型：Hook 节点保存什么
 
+`useRef`、`useMemo` 和 `useCallback` 都会把记录挂在当前 Fiber 的 Hook 链上，但它们对更新的处理不同。
+
+```mermaid
+flowchart TD
+  A[调用 Hook] --> B[按顺序读取当前 Hook]
+  B --> C{Hook 类型}
+  C -->|useRef| D[复用稳定对象]
+  C -->|useMemo / useCallback| E[比较依赖]
+  E -->|相同| F[返回缓存值]
+  E -->|变化| G[重新计算并写回]
+  D --> H[继续 Render]
+  F --> H
+  G --> H
+```
+
+输入是 Hook 参数和依赖数组，处理过程是读取链表节点并决定复用或更新，输出是本次 Render 使用的值。缓存属于性能工具，不能成为业务正确性的唯一依据。
+
 ### 12.1.1 Hook 仍然按调用顺序挂在 Fiber 上
 
 在第 6 章中，我们把 Hook 简化成 Fiber 上的一条链：

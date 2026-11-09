@@ -1619,7 +1619,54 @@ queue
 
 不同 React 版本的具体字段可能不同，应以目标版本源码为准。
 
-### 6.13.3 更新渲染路径
+### 6.13.3 Hook 链表如何连接 UpdateQueue
+
+```mermaid
+classDiagram
+  class FunctionFiber {
+    memoizedState
+    lanes
+  }
+
+  class Hook {
+    memoizedState
+    baseState
+    queue
+    next
+  }
+
+  class UpdateQueue {
+    pending
+    dispatch
+    lastRenderedReducer
+  }
+
+  class Update {
+    action
+    lane
+    next
+  }
+
+  FunctionFiber --> Hook : memoizedState
+  Hook --> Hook : next
+  Hook --> UpdateQueue : queue
+  UpdateQueue --> Update : pending
+```
+
+首次渲染时，React 依次创建 Hook 节点，并把第一个节点挂到 Fiber 的 `memoizedState`。后续渲染时，React 按调用顺序移动当前 Hook 指针，因此“不能在条件、循环或嵌套函数中调用 Hook”最终表现为链表节点对应关系发生变化。
+
+一次 `setCount` 的数据变化可以写成：
+
+```text
+调用前：Hook.memoizedState = 0，queue.pending = null
+调用后：queue.pending = Update(action, lane)
+Render：Reducer(0, action) 得到 1
+完成后：Hook.memoizedState = 1，当前 pending Update 被消费
+```
+
+这段关系图解决的是“State 保存在哪里”和“更新记录放在哪里”两个问题；下面的更新路径继续解释 React 如何在下一次 Render 中消费这条记录。
+
+### 6.13.4 更新渲染路径
 
 更新时：
 
@@ -1658,7 +1705,7 @@ function basicStateReducer<S>(
 }
 ```
 
-### 6.13.4 调用 Setter 的路径
+### 6.13.5 调用 Setter 的路径
 
 调用：
 
@@ -1686,7 +1733,7 @@ scheduleUpdateOnFiber
 
 在并发模式下，更新可能经过更多队列和优先级处理。理解 Hook 链表时，先抓住“创建记录、加入队列、调度 Fiber、下一轮读取”这条主线即可。
 
-### 6.13.5 为什么源代码不能直接当成 API 文档
+### 6.13.6 为什么源代码不能直接当成 API 文档
 
 源码中的函数名和字段适合回答“React 大致如何实现”，但不适合直接作为业务契约：
 

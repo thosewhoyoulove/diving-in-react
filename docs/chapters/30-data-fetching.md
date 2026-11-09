@@ -97,6 +97,19 @@ Key 不是缓存的全部，还要定义 `staleTime`、失效时机、垃圾回�
 
 ## 30.4 源码视角：外部 Store 与快照
 
+```mermaid
+flowchart TD
+  A[外部 Store 数据变化] --> B[通知 React 订阅]
+  B --> C[getSnapshot]
+  C --> D{快照引用是否变化}
+  D -->|否| E[跳过组件更新]
+  D -->|是| F[调度 Fiber Render]
+  F --> G[读取一致快照]
+  G --> H[Commit 新视图]
+```
+
+输入是外部 Store 的版本变化，处理过程是通知订阅者并比较快照，输出是需要更新的组件视图。`getSnapshot` 必须在数据没有变化时返回稳定引用，否则 React 会把每次读取都当成新数据。
+
 复杂数据层通常通过外部 Store 保存缓存，并用 `useSyncExternalStore` 让 React 订阅快照：
 
 ```tsx

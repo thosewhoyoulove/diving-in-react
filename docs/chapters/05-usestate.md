@@ -962,97 +962,330 @@ function handleClick() {
 
 不要把 `flushSync` 当成普通 State 更新方式。
 
-## 5.10 React 内部大致如何工作
+## 5.10 源码视角：一次状态更新如何从 dispatch 走到 Fiber
 
-### 5.10.1 首次调用 `useState`
+这一节把 `useState` 放回一次真实交互中观察。目标不是背下某个内部函数名，而是回答一个连续的问题：用户点击按钮后，`setCount` 如何变成新的 State，新的 State 又如何进入 Render 和 Commit？
 
-首次渲染函数组件时，源码视角下会经过类似流程：
+本节的源码片段按 React 19.0.0 的源码结构对照，重点参考 `packages/react/src/ReactHooks.js`、`packages/react-reconciler/src/ReactFiberHooks.js` 和 `packages/react-reconciler/src/ReactFiberWorkLoop.js`。React 的内部函数、字段和并发分支会随版本变化，代码用于定位机制和调用关系，不构成业务 API。
 
-```text
-updateFunctionComponent
-  ↓
-renderWithHooks
-  ↓
-mountState
-  ↓
-创建 Hook 节点
-  ↓
-保存初始 State
-  ↓
-创建更新队列
-  ↓
-创建 dispatch 函数
-  ↓
-返回 [state, dispatch]
-```
-
-`mountState` 是源码中的重要概念函数，具体实现会随着版本变化。
-
-### 5.10.2 更新时调用 `useState`
-
-后续渲染时，React 会按照 Hook 调用顺序读取已有 Hook：
-
-```text
-renderWithHooks
-  ↓
-updateState
-  ↓
-读取当前 Hook
-  ↓
-读取 pending 更新队列
-  ↓
-按 Lane 过滤和计算更新
-  ↓
-得到新的 memoizedState
-  ↓
-返回 [state, dispatch]
-```
-
-### 5.10.3 调用 Setter 时
-
-调用：
+### 5.10.1 从一个使用场景开始
 
 ```tsx
-setCount((value) => value + 1);
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  function handleClick() {
+    setCount((current) => current + 1);
+  }
+
+  return <button onClick={handleClick}>{count}</button>;
+}
 ```
 
-可以用简化链路表示：
+用户看到的结果是：点击一次，按钮从 `0` 变成 `1`。React 内部至少要完成以下工作：
+
+1. 在当前组件对应的 Fiber 上找到 `count` 对应的 Hook；
+2. 保存这次更新，不能让它在下一次 Render 前丢失；
+3. 记录更新的 Lane，让紧急输入和非紧急工作可以区分；
+4. 让 Root 进入调度流程；
+5. 在 Render 阶段按顺序计算新的 State；
+6. 在 Commit 阶段把新文本应用到真实 DOM。
+
+如果 `setCount` 只是直接修改一个普通变量，React 无法知道哪个组件需要重新执行，也无法保存多个连续更新，更不能在 Render 被中断后恢复正确的状态。因此 Setter 的作用是提交一条 Update，而不是直接改写当前 Render 中的局部变量。
+
+### 5.10.2 完整流程图
+
+```mermaid
+flowchart TD
+  A[用户点击 button] --> B[React 事件系统调用 handleClick]
+  B --> C[调用 setCount action]
+  C --> D[dispatchSetState]
+  D --> E[requestUpdateLane 选择 Lane]
+  E --> F[创建 Update]
+  F --> G[加入 Hook UpdateQueue]
+  G --> H[沿 Fiber 父链标记到 Root]
+  H --> I[ensureRootIsScheduled]
+  I --> J[Render: updateReducer 处理队列]
+  J --> K[得到新的 Hook.memoizedState]
+  K --> L[协调新的 React Element 和 Fiber]
+  L --> M[Commit: 更新文本节点]
+  M --> N[浏览器绘制按钮新文本]
+```
+
+这张图中最容易混淆的是 `G`、`J` 和 `M`：调用 Setter 时只是把 Update 放入队列；Render 时才计算新 State；Commit 时才把计算结果写入 DOM。
+
+### 5.10.3 核心对象之间如何连接
+
+```mermaid
+classDiagram
+  class Fiber {
+    memoizedState
+    lanes
+    child
+    return
+    updateQueue
+  }
+
+  class Hook {
+    memoizedState
+    baseState
+    baseQueue
+    queue
+    next
+  }
+
+  class UpdateQueue {
+    pending
+    dispatch
+    lanes
+  }
+
+  class Update {
+    lane
+    action
+    next
+  }
+
+  class Lane {
+    bitmask
+  }
+
+  Fiber --> Hook : memoizedState 链表
+  Hook --> UpdateQueue : queue
+  UpdateQueue --> Update : pending 环形链表
+  Update --> Lane : lane
+  Fiber --> Fiber : child / sibling / return
+```
+
+各对象的职责不同：
+
+- `Fiber` 表示组件在 React 内部的工作节点，也保存 Hook 链表和当前待处理的 Lane；
+- `Hook` 保存某一次 Hook 调用对应的状态记录，多个 Hook 通过 `next` 连接；
+- `UpdateQueue` 保存某个 State Hook 尚未处理的更新和 Setter；
+- `Update` 描述一次状态动作，`action` 可以是目标值，也可以是函数式更新；
+- `Lane` 表示这次更新所属的工作集合，帮助 Root 选择处理时机。
+
+`memoizedState` 是当前已经计算出的状态，`pending` 是还没有被当前 Render 消费的更新。两者分别代表“当前结果”和“未来工作”。
+
+### 5.10.4 简化版 `useState`
+
+先忽略 Fiber、并发队列和 Lane，只保留“保存状态、记录更新、下一次 Render 消费队列”这条主线：
+
+```ts
+function createSimpleState<S>(initialState: S) {
+  let state = initialState;
+  const pending: Array<S | ((previous: S) => S)> = [];
+
+  function dispatch(action: S | ((previous: S) => S)) {
+    pending.push(action);
+  }
+
+  function render(): S {
+    while (pending.length > 0) {
+      const action = pending.shift()!;
+      state = typeof action === 'function'
+        ? (action as (previous: S) => S)(state)
+        : action;
+    }
+
+    return state;
+  }
+
+  return { dispatch, render };
+}
+```
+
+这段代码解决三个问题：
+
+- 输入是初始 State 和一条值更新或函数式更新；
+- 处理过程是先保存 Update，再在下一次 `render()` 中按队列顺序计算；
+- 输出是计算后的新 State，后续由渲染器决定是否更新宿主节点。
+
+它仍然不是 React 的实现，因为它没有 Fiber 身份、Lane、批量边界、并发更新和 DOM Commit。它只用来建立“Setter 入队，Render 消费”的模型。
+
+### 5.10.5 真实源码入口一：公共 `useState`
+
+React 公共包中的 `useState` 可以概括为下面这个真实源码形态：
+
+```ts
+export function useState<S>(
+  initialState: (() => S) | S,
+): [S, Dispatch<BasicStateAction<S>>] {
+  const dispatcher = resolveDispatcher();
+  return dispatcher.useState(initialState);
+}
+```
+
+这段代码解决的问题是：公共 API 不直接决定当前是首次渲染还是更新渲染，而是通过当前 Dispatcher 把工作交给正确的内部实现。
+
+- 输入：初始 State 和当前 React 渲染上下文；
+- 处理：`resolveDispatcher()` 取得当前 Dispatcher；
+- 输出：由 Mount 或 Update Dispatcher 返回 `[state, dispatch]`。
+
+这也是 Hook 不能脱离 React 组件调用的原因：普通函数调用时没有有效的渲染 Dispatcher。
+
+### 5.10.6 真实源码入口二：State Reducer 和 Hook 初始化
+
+`useState` 的值更新和函数式更新最终都可以通过基础 Reducer 计算：
+
+```ts
+function basicStateReducer<S>(
+  state: S,
+  action: BasicStateAction<S>,
+): S {
+  return typeof action === 'function'
+    ? (action as (state: S) => S)(state)
+    : action;
+}
+```
+
+初始化时，React 会创建 Hook、保存初始值、创建队列并绑定 dispatch。源码中还包含懒初始化、开发检查和并发路径，核心关系可以缩小为：
+
+```ts
+function mountState<S>(initialState: (() => S) | S) {
+  const hook = mountStateImpl(initialState);
+  const queue = hook.queue;
+  const dispatch = dispatchSetState.bind(
+    null,
+    currentlyRenderingFiber,
+    queue,
+  );
+
+  queue.dispatch = dispatch;
+  return [hook.memoizedState, dispatch];
+}
+```
+
+- 输入：初始值或返回初始值的函数；
+- 处理：创建 Hook 和 `UpdateQueue`，把当前 Fiber 和队列绑定到 dispatch；
+- 输出：当前 State 和稳定的 Setter；
+- 设计原因：Setter 需要知道“哪个 Fiber 的哪个队列”正在更新，不能只是一个独立函数。
+
+### 5.10.7 真实源码入口三：dispatch 进入调度
+
+调用 Setter 后，React 需要把更新和 Fiber、Root 连接起来。忽略 eager state、Render Phase Update 和开发工具分支后，核心路径可以表示为：
+
+```ts
+function dispatchSetState<S>(
+  fiber: Fiber,
+  queue: UpdateQueue<S, BasicStateAction<S>>,
+  action: BasicStateAction<S>,
+) {
+  const lane = requestUpdateLane(fiber);
+  const update = createUpdate(action, lane);
+
+  enqueueConcurrentHookUpdate(fiber, queue, update, lane);
+  scheduleUpdateOnFiber(fiber, lane);
+}
+```
+
+这段代码的输入是当前 Fiber、Hook 队列、更新动作；处理过程是选择 Lane、创建 Update、入队并通知 Root；输出是 Root 上出现待处理工作，之后进入 Render。
+
+它不能简化成“修改 `hook.memoizedState`”，因为 Render 可能被暂停、重做或只处理部分 Lane。把动作先记录成 Update，React 才能保持更新顺序，并在正确的 Render 中重新计算结果。
+
+### 5.10.8 一次完整的数据变化
+
+以初始值 `0` 和一次 `setCount(1)` 为例：
 
 ```text
-dispatchSetState
-  ↓
-requestUpdateLane
-  ↓
-创建 Update
-  ↓
-enqueueConcurrentHookUpdate
-  ↓
-把 Update 放入 Hook 队列
-  ↓
-scheduleUpdateOnFiber
-  ↓
-调度 Root 更新
+首次 Render：
+Fiber.memoizedState -> Hook
+Hook.memoizedState = 0
+Hook.queue.pending = null
+
+调用 setCount(1) 后：
+Update.action = 1
+Update.lane = 当前更新 Lane
+Update.next = 队列中的下一个 Update
+Hook.queue.pending = Update
+Fiber.lanes 包含当前 Lane
+Root.pendingLanes 包含当前 Lane
+
+Render 消费队列后：
+Hook.memoizedState = 1
+Hook.baseState = 1
+当前 Lane 的 Update 被消费
+新的 React Element 文本为 "1"
+
+Commit 完成后：
+DOM 文本节点从 "0" 变成 "1"
+待处理 Lane 被从 Root 状态中移除或更新
 ```
 
-这些函数名是 React 18/19 源码中常见的阅读入口。这里省略了并发队列、Entangled Lane、错误恢复和优先级细节。
+React 内部的 `pending` 通常是环形链表。上面的箭头只表达逻辑关系，不代表实际链表的首尾指针布局。
 
-### 5.10.4 Hook 队列的简化结构
+### 5.10.9 多次更新如何按顺序计算
 
-可以用下面的结构帮助理解：
+下面三条更新都发生在同一次事件中：
+
+```tsx
+setCount(1);
+setCount(2);
+setCount((previous) => previous + 1);
+```
+
+如果初始值是 `0`，队列计算过程是：
 
 ```text
-FunctionComponent Fiber
-└─ memoizedState
-   └─ Hook
-      ├─ memoizedState: 当前状态
-      ├─ baseState: 基础状态
-      ├─ baseQueue: 基础更新队列
-      ├─ queue
-      │  └─ pending: 待处理更新
-      └─ next: 下一个 Hook
+初始 state = 0
+
+Update 1: action = 1
+state = 1
+
+Update 2: action = 2
+state = 2
+
+Update 3: action = previous => previous + 1
+state = 3
+
+最终 memoizedState = 3
 ```
 
-`queue.pending` 在 React 内部通常通过环形链表组织更新，以便并发场景下追加和合并。这里使用普通箭头表示逻辑关系，省略了环形链表的具体连接方式。
+如果写成：
+
+```tsx
+setCount(count + 1);
+setCount(count + 1);
+setCount(count + 1);
+```
+
+并且当前 Render 中 `count` 是 `0`，三个 Update 的 action 都是值 `1`，因此最终结果是 `1`。这不是 Setter 只执行了一次，而是三个值更新按顺序执行后，后面的值覆盖了前面的计算结果。
+
+### 5.10.10 为什么使用队列、链表和 Lane
+
+- 使用 UpdateQueue，可以保存同一事件中产生的多个动作；
+- 使用函数式更新，可以让后一个动作读取前一个动作的结果；
+- 使用链表，可以在并发场景下追加和合并更新，避免频繁搬移数组；
+- 使用 Lane，可以让一次 Render 只处理当前选中的更新集合，其他工作继续保留；
+- 使用 Fiber，可以让更新归属到具体组件，并沿父链找到 Root；
+- 把 Render 和 Commit 分开，可以在提交 DOM 前暂停或放弃中间计算结果。
+
+这些设计共同解决了“状态保存、更新顺序、优先级、中断恢复和 DOM 一致性”几个不同问题，不能把它们归结成一个单独的 `setState` 函数。
+
+### 5.10.11 源码和日常开发的关系
+
+开发中连续调用 Setter、追加流式消息、处理定时器回调或更新对象 State 时，都会遇到 UpdateQueue 的行为：
+
+- 依赖前一个状态时，使用函数式更新；
+- 需要在当前函数中使用下一值时，先用局部变量计算；
+- 需要观察提交后的 State 时，在 Effect 或后续 Render 中读取；
+- 需要让复杂结果更新让位于输入时，使用 `startTransition`，不要把它误解成防抖；
+- 需要同步读取 DOM 时才考虑 `flushSync`，它不是普通 Setter 的替代品。
+
+### 5.10.12 面试口述版本
+
+> `useState` 会在函数组件对应的 Fiber 上保存一个 Hook 记录。首次渲染时，React 创建 Hook、初始 State、UpdateQueue 和 dispatch；后续渲染时，React 根据 Hook 调用顺序找到对应记录，并处理队列中的 Update。调用 Setter 时不会直接修改当前渲染快照，而是根据 Fiber 和更新上下文选择 Lane，创建 Update，加入队列并调度 Root。Render 阶段按顺序计算新的 State，协调新的 Fiber 树，Commit 阶段再把变化应用到 DOM。连续依赖前一个结果的更新应使用函数式更新，因为值更新可能都捕获同一次渲染中的旧快照。
+
+### 5.10.13 本节小结
+
+1. `useState` 的公共 API 通过 Dispatcher 进入 Mount 或 Update 路径；
+2. Hook 保存在函数组件 Fiber 的 Hook 链表中；
+3. Setter 创建 Update，并把它放入对应 Hook 的 UpdateQueue；
+4. Update 同时记录 action 和 Lane；
+5. Render 阶段消费队列并计算新的 `memoizedState`；
+6. Commit 阶段才把结果应用到 DOM；
+7. 函数式更新按队列中的最新中间结果计算；
+8. Lane、Fiber、UpdateQueue 和 Render/Commit 分工协作，共同支持可恢复的状态更新。
 
 ## 5.11 常见错误和错误写法
 

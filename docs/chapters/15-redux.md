@@ -33,6 +33,20 @@ Redux 把“发生了什么”写成 Action，把“状态如何变化”写成 
 
 ## 15.1 源码模型：最小 Store
 
+Redux Store 的核心是把状态替换和订阅通知集中在一个对象中：
+
+```mermaid
+flowchart TD
+  A[dispatch action] --> B[调用 reducer]
+  B --> C[替换 current state]
+  C --> D[复制 listeners]
+  D --> E[通知订阅者]
+  E --> F[Selector 比较结果]
+  F --> G[相关组件 Render]
+```
+
+输入是 Action，处理过程是 Reducer 生成新状态并通知订阅者，输出是选择器读取的新快照。订阅通知不等于所有组件都必须更新，React-Redux 还会通过选择器和引用比较缩小影响范围。
+
 ### 15.1.1 Store 的四个核心能力
 
 ```ts

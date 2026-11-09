@@ -98,7 +98,19 @@ const customContainerTitles = {
   note: '版本说明',
 };
 
-function configureCustomContainers(md: { use: (plugin: unknown, name: string, options: unknown) => void }) {
+function configureCustomContainers(md: any) {
+  const defaultFence = md.renderer.rules.fence;
+
+  md.renderer.rules.fence = (tokens: any[], index: number, options: any, env: any, self: any) => {
+    const token = tokens[index];
+
+    if (token.info.trim() === 'mermaid') {
+      return `<div class="mermaid">${md.utils.escapeHtml(token.content)}</div>`;
+    }
+
+    return defaultFence(tokens, index, options, env, self);
+  };
+
   Object.entries(customContainerTitles).forEach(([type, defaultTitle]) => {
     md.use(container, type, {
       render(tokens: Array<{ nesting: number; info: string }>, index: number) {

@@ -1417,6 +1417,20 @@ ConversationPage
 
 ### 源码视角
 
+函数组件的执行可以沿着 `beginWork → renderWithHooks → reconcileChildren → completeWork` 观察：
+
+```mermaid
+flowchart TD
+  A[函数组件 Fiber] --> B[beginWork]
+  B --> C[renderWithHooks 执行组件]
+  C --> D[返回 React Element]
+  D --> E[协调子节点]
+  E --> F[completeWork 收集结果]
+  F --> G[Commit 宿主变化]
+```
+
+输入是当前 Fiber、Props 和 Hook 上下文，处理过程是执行组件并把返回值转成子 Fiber，输出是下一版子树和提交标记。组件函数可以重复执行，所以 Render 中应保持纯粹；DOM 操作和外部副作用要等到 Commit 或 Effect 阶段。
+
 以下是 React 18/19 当前源码中与函数组件相关的重要概念：
 
 - `beginWork`；

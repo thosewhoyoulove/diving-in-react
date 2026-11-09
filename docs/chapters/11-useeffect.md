@@ -1013,6 +1013,22 @@ commitPassiveMountEffects
 
 ### 源码视角
 
+`useEffect` 的关键不是“组件函数执行后马上调用回调”，而是把 Effect 记录到当前 Fiber，等 Commit 后再处理：
+
+```mermaid
+flowchart TD
+  A[调用 useEffect] --> B[创建或更新 Hook]
+  B --> C[比较依赖数组]
+  C --> D{依赖是否变化}
+  D -->|否| E[复用旧 Effect]
+  D -->|是| F[标记 Fiber Effect]
+  F --> G[Commit 完成]
+  G --> H[清理旧 Effect]
+  H --> I[调度新 Effect]
+```
+
+输入是 Effect 回调和依赖数组，处理过程是挂到 Fiber 的 Effect 结构并由 Commit 阶段决定清理和执行，输出是外部系统同步结果。这样设计可以避免 Render 被重做时重复修改外部系统。
+
 可以关注：
 
 ```text

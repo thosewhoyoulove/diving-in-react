@@ -30,6 +30,22 @@ outline: deep
 
 ## 22.1 源码模型：两个 Window 之间的消息
 
+iframe 通信的源码主线是浏览器事件和 React 状态之间的桥接：
+
+```mermaid
+sequenceDiagram
+  participant Parent as 父窗口
+  participant Child as iframe
+  participant React as React State
+  Parent->>Child: postMessage(request)
+  Child->>Child: 校验 origin 和 requestId
+  Child-->>Parent: postMessage(response)
+  Parent->>React: 事件回调调用 Setter
+  React-->>Parent: Render 新状态
+```
+
+输入是跨 Window 消息，处理过程是校验来源、匹配请求并进入组件状态，输出是页面更新。监听器、超时任务和连接都需要在 Effect 清理阶段释放。
+
 ### 22.1.1 iframe 创建独立浏览上下文
 
 ```text

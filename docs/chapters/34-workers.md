@@ -135,6 +135,20 @@ SharedWorker 适合跨标签页共享连接、缓存或同步状态，但需要�
 
 ## 34.6 源码视角：Worker 结果如何回到 React
 
+```mermaid
+sequenceDiagram
+  participant UI as React 组件
+  participant Worker as Web Worker
+  UI->>Worker: postMessage(taskId, payload)
+  Worker->>Worker: 计算或分块处理
+  Worker-->>UI: progress / result / error
+  UI->>UI: 校验 taskId 和版本
+  UI->>UI: 函数式更新 State
+  UI-->>UI: Render 进度或结果
+```
+
+输入是带任务 ID 的工作请求，处理过程是 Worker 计算并通过消息返回阶段结果，输出是 React 显示的进度或结果。Worker 解决的是 CPU 任务占用主线程的问题，取消、旧结果过滤、序列化成本和 React Render 成本仍需要单独设计。
+
 ```text
 Worker 线程计算
   -> postMessage

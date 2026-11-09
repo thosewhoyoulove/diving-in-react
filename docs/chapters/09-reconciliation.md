@@ -1009,6 +1009,38 @@ Fragment
   → 删除剩余旧子树
 ```
 
+### 9.12.1.1 一次数组 Diff 的执行过程
+
+```mermaid
+flowchart TD
+  A[收到新 children 数组] --> B[读取 current 子 Fiber]
+  B --> C{位置、类型和 key 是否匹配}
+  C -->|匹配| D[复用 Fiber 并更新 props]
+  C -->|不匹配| E[建立剩余旧节点 Map]
+  E --> F{新节点 key 是否存在}
+  F -->|存在且类型相同| G[从 Map 复用并标记移动]
+  F -->|不存在| H[创建新 Fiber 并标记插入]
+  D --> I[继续处理下一个新节点]
+  G --> I
+  H --> I
+  I --> J{还有旧节点未使用?}
+  J -->|是| K[标记删除]
+  J -->|否| L[完成子树协调]
+  K --> L
+```
+
+以旧列表 `[A, B, C]` 变成 `[B, A, D]` 为例：
+
+```text
+旧 Fiber：A(key=a) -> B(key=b) -> C(key=c)
+新节点 1：B(key=b)，复用旧 B，位置发生变化，标记移动
+新节点 2：A(key=a)，复用旧 A，位置发生变化，标记移动
+新节点 3：D(key=d)，旧 Map 中没有，创建新 Fiber，标记插入
+旧 C(key=c) 未被使用，标记删除
+```
+
+`key` 表达的是数据身份，`placeChild` 负责把匹配结果转换成插入或移动标记，Commit 阶段再根据这些标记操作 DOM。Diff 阶段本身不直接移动浏览器节点。
+
 ### 9.12.2 Mount 和 Update 的差别
 
 React 会区分首次挂载和更新：

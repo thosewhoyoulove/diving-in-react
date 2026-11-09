@@ -28,6 +28,22 @@ outline: deep
 
 ## 17.1 源码模型：从 Update 到子树 Render
 
+重新渲染的源码问题是：收到 Update 后，哪些 Fiber 必须继续工作，哪些子树可以复用？
+
+```mermaid
+flowchart TD
+  A[State / Props / Context / Store 变化] --> B[标记 Fiber 和 Root]
+  B --> C[beginWork]
+  C --> D{有自身更新或 Context 依赖?}
+  D -->|是| E[执行组件并协调子树]
+  D -->|否| F[尝试 Bailout]
+  E --> G[completeWork]
+  F --> G
+  G --> H[Commit 必要变化]
+```
+
+输入是更新来源和当前 Fiber，处理过程是检查 Lane、Props、Context 和子树工作，输出是继续计算的 Fiber 或可复用的子树。组件函数再次执行不等于 DOM 一定变化，Render 和 Commit 必须分别观察。
+
 ### 17.1.1 Root 调度更新
 
 ```text

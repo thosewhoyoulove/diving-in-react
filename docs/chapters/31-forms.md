@@ -194,6 +194,19 @@ Reducer 把表单事件集中起来，适合字段多、状态转换复杂的场
 
 ## 31.7 源码视角：输入事件到字段状态
 
+```mermaid
+flowchart TD
+  A[用户输入 input] --> B[React 事件系统]
+  B --> C[读取 field name 和 value]
+  C --> D[dispatch 表单更新]
+  D --> E[Hook / Reducer 队列]
+  E --> F[校验和派生状态]
+  F --> G[Render 错误或提交状态]
+  G --> H[Commit 表单反馈]
+```
+
+输入是浏览器输入事件，处理过程是读取字段、更新表单状态并计算校验结果，输出是字段值、错误信息和提交按钮状态。受控表单把每次输入接入 React，非受控表单则更多依赖 DOM 和提交时的 FormData。
+
 ```text
 input/change
   -> React 事件处理

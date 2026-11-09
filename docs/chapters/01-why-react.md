@@ -1075,6 +1075,19 @@ function SearchInput() {
 
 ### 源码视角
 
+从页面现象看，React 把“描述 UI”和“修改 DOM”分开了。源码阅读可以沿着 `createElement → Fiber → beginWork → completeWork → commitRoot` 追踪。
+
+```mermaid
+flowchart LR
+  A[JSX / createElement] --> B[React Element]
+  B --> C[Fiber 节点]
+  C --> D[Render 计算差异]
+  D --> E[Commit 修改宿主环境]
+  E --> F[浏览器绘制]
+```
+
+输入是组件返回的 Element，处理过程是 React 建立 Fiber、比较前后结果并收集提交标记，输出是必要的 DOM 变化。Element 负责描述某次 Render 的结果，Fiber 负责保存跨 Render 的工作身份，DOM 负责最终显示。Render 与 Commit 分开，是为了避免可中断计算把半成品直接暴露给用户。
+
 以下是 React 18/19 当前实现中的重要概念：
 
 - Fiber 树；
