@@ -1371,9 +1371,175 @@ Commit
 
 ## 10.19 源码阅读：Lane 和调度入口
 
-### 10.19.1 Lane 类型和常量
+这一节先从“用户正在输入，同时页面有一块复杂内容需要更新”的场景开始，再解释 Lane 如何把更新组织成可选择、可暂停和可恢复的工作集合。源码函数名集中放在最后，作为定位工具。
 
-可以先搜索：
+### 10.19.1 先看紧急输入和过渡更新
+
+```tsx
+function SearchBox() {
+  const [input, setInput] = useState('');
+  const [query, setQuery] = useState('');
+  const [isPending, startTransition] = useTransition();
+
+  function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextValue = event.target.value;
+    setInput(nextValue);
+
+    startTransition(() => {
+      setQuery(nextValue);
+    });
+  }
+
+  return (
+    <>
+      <input value={input} onChange={handleChange} />
+      {isPending ? <span>正在更新结果</span> : null}
+      <SearchResults query={query} />
+    </>
+  );
+}
+```
+
+用户输入一个字符时，页面可以按两种紧迫程度理解：
+
+```text
+输入事件到达
+  ↓
+input 更新需要尽快反馈
+  ↓
+query 更新被标记为 Transition
+  ↓
+两个更新进入同一个 Root 的待处理工作
+  ↓
+React 选择更紧急的 Lane
+  ↓
+先完成输入反馈
+  ↓
+稍后处理结果列表
+```
+
+Lane 是 React 内部表示更新集合的位掩码。它不是业务优先级，也不是“开启后台线程”的开关，而是帮助 React 回答：当前 Root 上有哪些工作、这次先处理哪一组、哪些工作可以暂缓。
+
+### 10.19.2 更新如何进入 Root
+
+从一次 State Setter 开始，可以先记住这条行为链：
+
+```text
+调用 setState
+  ↓
+根据当前上下文选择 Lane
+  ↓
+创建带 action 和 lane 的 Update
+  ↓
+把 Update 放入 Hook 或 Fiber 的队列
+  ↓
+沿 Fiber 父链把工作标记到 Root
+  ↓
+Root.pendingLanes 加入这次工作
+  ↓
+安排同步或并发任务
+```
+
+因此，调用 Setter 时并没有立即完成整个页面更新。它先把“要做什么”和“这件事有多紧急”记录下来，之后由 Root 根据所有待处理工作重新选择执行顺序。
+
+### 10.19.3 Root 如何选择下一组 Lane
+
+```mermaid
+flowchart TD
+  A[Update 携带 Lane 进入 Root] --> B[Root 记录 pending work]
+  B --> C[getNextLanes 读取 Root 状态]
+  C --> D{存在 expired work?}
+  D -->|是| E[优先选择过期工作]
+  D -->|否| F{存在未挂起的高优先级工作?}
+  F -->|是| G[选择最高优先级 Lane 集合]
+  F -->|否| H{存在 pinged 或 retry work?}
+  H -->|是| I[选择可恢复工作]
+  H -->|否| J[暂时没有可执行工作]
+  E --> K[ensureRootIsScheduled]
+  G --> K
+  I --> K
+  K --> L[同步或并发 Render]
+```
+
+一次选择可以这样记录：
+
+```text
+Root.pendingLanes = SyncLane | TransitionLane
+Root.suspendedLanes = TransitionLane
+新的输入到达：加入 SyncLane
+选择下一组工作：优先处理 SyncLane
+Render：先处理输入，TransitionLane 继续保留
+输入提交：移除已完成的 SyncLane
+后续恢复：重新选择 TransitionLane
+```
+
+如果低优先级工作被跳过，它不会因为这次 Render 没处理就自动丢失。相关 Update 和 Root 的 pending 状态会保留，之后仍可被选择。
+
+### 10.19.4 Root 状态分别回答什么问题
+
+源码中经常会看到这些 Root 字段：
+
+```text
+pendingLanes
+suspendedLanes
+pingedLanes
+expiredLanes
+mutableReadLanes
+entangledLanes
+eventTimes
+expirationTimes
+```
+
+先不要记住每个位图的数字，而是把字段映射到问题：
+
+```text
+pendingLanes   → 哪些工作还没有完成？
+suspendedLanes → 哪些工作因为数据或边界暂时不能继续？
+pingedLanes    → 哪些挂起工作已经可以重试？
+expiredLanes   → 哪些工作等待太久，需要提高紧迫程度？
+entangledLanes → 哪些工作需要一起处理？
+eventTimes     → 这些工作大约什么时候进入系统？
+```
+
+### 10.19.5 优先级选择和调度是两步
+
+Lane 选择和 Scheduler 安排任务属于不同层次：
+
+```text
+Root 状态
+  ↓
+选择下一组 Lanes
+  ↓
+映射到事件或 Scheduler 优先级
+  ↓
+安排同步回调或并发回调
+  ↓
+执行 Render
+```
+
+这意味着“发生在 Promise 回调中”不等于“React 一定会使用低优先级 Lane”。如果业务明确需要把更新标记为 Transition，应使用 `startTransition` 等 API。
+
+### 10.19.6 过期机制如何避免低优先级工作饿死
+
+优先响应紧急输入不能意味着低优先级更新永远等待。React 会记录更新时间，并在等待超过一定条件时标记工作已经过期：
+
+```text
+检查 pending Lane 的事件时间
+  ↓
+判断是否等待过久
+  ↓
+标记 expiredLanes
+  ↓
+后续选择时提高处理紧迫程度
+```
+
+这体现了调度系统的两个目标：紧急工作尽快响应，普通工作最终完成。
+
+### 10.19.7 源码导航入口：用于定位，不是必须背诵
+
+理解用户时间线后，可以按下面顺序阅读：
+
+**Lane 的集合操作：**
 
 ```text
 NoLanes
@@ -1387,137 +1553,44 @@ removeLanes
 includesSomeLane
 ```
 
-重点观察：
-
-```text
-Lane 是什么类型
-如何创建一组 Lanes
-如何判断某个 Lane 是否在集合中
-如何合并和移除
-```
-
-### 10.19.2.1 Root 如何选择下一组 Lane
-
-```mermaid
-flowchart TD
-  A[Update 携带 Lane 进入 Root] --> B[markRootUpdated]
-  B --> C[Root.pendingLanes 加入 Lane]
-  C --> D[getNextLanes]
-  D --> E{存在 expiredLanes?}
-  E -->|是| F[优先选择过期工作]
-  E -->|否| G{存在未挂起的高优先级工作?}
-  G -->|是| H[选择最高优先级 Lane 集合]
-  G -->|否| I{存在 pinged 或 retry 工作?}
-  I -->|是| J[选择可恢复工作]
-  I -->|否| K[暂时没有可执行工作]
-  F --> L[ensureRootIsScheduled]
-  H --> L
-  J --> L
-  L --> M[同步或并发 Render]
-```
-
-具体 Lane 位图会随 React 版本变化，但数据流相对稳定：Update 先进入 Root 的待处理集合，`getNextLanes` 结合挂起、过期、重试和关联状态选择工作，Scheduler 再决定以同步任务还是并发任务执行。
-
-一次选择可以记录为：
-
-```text
-Root.pendingLanes = SyncLane | TransitionLane
-Root.suspendedLanes = TransitionLane
-当前输入到达：加入 SyncLane
-getNextLanes：选择 SyncLane
-Render：先处理输入更新，TransitionLane 继续保留
-输入提交：移除已完成的 SyncLane
-后续恢复：重新选择 TransitionLane
-```
-
-### 10.19.2 从更新到 Lane
+**更新进入 Root：**
 
 ```text
 dispatchSetState
   ↓
 requestUpdateLane
   ↓
-createUpdate(lane, action)
+createUpdate
   ↓
 enqueueUpdate
   ↓
 markUpdateLaneFromFiberToRoot
   ↓
 markRootUpdated
-  ↓
-ensureRootIsScheduled
 ```
 
-这条链路把一个 Hook Setter 和 Root 调度连接起来。
-
-### 10.19.3 Root Lane 状态
-
-搜索 Root 结构中的：
-
-```text
-pendingLanes
-suspendedLanes
-pingedLanes
-expiredLanes
-mutableReadLanes
-entangledLanes
-eventTimes
-expirationTimes
-```
-
-不要一开始试图记住每个字段。先建立问题映射：
-
-```text
-哪些工作还没完成？
-哪些工作因为挂起暂时不能做？
-哪些工作恢复了？
-哪些工作等太久？
-哪些工作需要一起处理？
-```
-
-### 10.19.4 `getNextLanes`
-
-这个函数或相关逻辑负责从 Root 状态中选择下一组工作。阅读时可以按条件分类：
-
-```text
-没有 pending → 没有工作
-存在 expired → 优先处理过期工作
-有未挂起工作 → 选择最高优先级集合
-只有 pinged → 尝试恢复挂起工作
-当前工作与新工作冲突 → 重新选择或重启
-```
-
-### 10.19.5 `ensureRootIsScheduled`
-
-这个入口把 Lane 选择转换成调度回调：
+**选择和安排工作：**
 
 ```text
 getNextLanes
-  ↓
-lanesToEventPriority / lanesToSchedulerPriority
-  ↓
-scheduleSyncCallback 或 scheduleCallback
-  ↓
-performSyncWorkOnRoot / performConcurrentWorkOnRoot
+ensureRootIsScheduled
+lanesToEventPriority
+lanesToSchedulerPriority
+scheduleSyncCallback
+scheduleCallback
 ```
 
-不同版本可能把映射拆到不同文件，但职责边界基本类似。
-
-### 10.19.6 `markStarvedLanesAsExpired`
-
-阅读这个逻辑可以理解 React 如何防止低优先级更新无限等待：
+**挂起、恢复和过期：**
 
 ```text
-检查每个 pending Lane 的事件时间
-  ↓
-判断是否超过过期阈值
-  ↓
-标记 expiredLanes
-  ↓
-提高后续处理紧迫程度
+markRootSuspended
+markRootPinged
+markStarvedLanesAsExpired
+performSyncWorkOnRoot
+performConcurrentWorkOnRoot
 ```
 
-这说明优先级系统必须同时考虑“快”和“最终完成”。
+这些名称用于回答“更新如何带上 Lane、如何到达 Root、Root 如何选下一组工作”。它们不是业务 API，Lane 的具体位图和内部函数会随 React 版本变化；阅读源码时优先验证“Update 入队 → Root 记录 → 选择 Lanes → 调度 Render → 完成 Commit”这条稳定行为链。
 
 ## 10.20 官方行为、源码细节与工程结论
 

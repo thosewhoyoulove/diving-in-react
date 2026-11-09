@@ -976,40 +976,84 @@ function Page() {
 
 ## 9.12 源码阅读：`reconcileChildFibers`
 
-### 9.12.1 从 `beginWork` 进入子节点协调
+这一节先从列表变化在页面上的表现开始，再解释 React 如何根据位置、类型和 `key` 决定复用、移动、插入或删除。源码函数名集中放在最后，作为导航入口。
 
-源码阅读可以沿着：
+### 9.12.1 先看一次列表更新的用户时间线
+
+```tsx
+function TodoList({ todos }: { todos: Todo[] }) {
+  return (
+    <ul>
+      {todos.map((todo) => (
+        <TodoRow key={todo.id} todo={todo} />
+      ))}
+    </ul>
+  );
+}
+```
+
+旧列表从 `[A, B, C]` 变成 `[B, A, D]` 时，用户只会看到列表顺序和内容变化。React 内部可以按下面的时间线理解：
+
+```text
+组件获得新的 todos
+  ↓
+Render 生成新的 React Element 列表
+  ↓
+React 读取旧的子 Fiber 列表
+  ↓
+根据 key 和元素类型寻找可复用的 Fiber
+  ↓
+记录 B、A 的移动，D 的插入，C 的删除
+  ↓
+Render 完成
+  ↓
+Commit 根据标记操作 DOM
+  ↓
+用户看到 [B, A, D]
+```
+
+协调阶段只计算“需要做什么”，不会在比较过程中直接移动浏览器节点。这样 Render 可以被重新执行，真正的 DOM 变化集中在 Commit 阶段处理。
+
+`key` 表达的是数据身份：
+
+```text
+key 相同且类型相同 → 倾向于复用原 Fiber 和组件 State
+key 不同或类型不同 → 可能创建新 Fiber，并清理旧身份
+```
+
+如果使用数组索引作为 key，插入或排序后，同一个位置可能对应不同数据，输入草稿、展开状态和异步状态就可能跟错对象。
+
+### 9.12.2 从 `beginWork` 进入子节点协调
+
+把用户时间线翻译成 React 内部的概念流程：
 
 ```text
 beginWork
   ↓
-updateFunctionComponent / updateHostComponent
+处理函数组件或宿主组件
   ↓
 reconcileChildren
   ↓
-reconcileChildFibers
+根据 children 形状选择协调路径
+  ↓
+比较旧 Fiber 和新 React Element
+  ↓
+复用、创建、移动或标记删除
+  ↓
+Commit 处理这些标记
 ```
 
-`reconcileChildFibers` 根据新 children 的形状选择路径：
+新 children 的形状会影响具体路径：
 
 ```text
-单个 React Element
-  → reconcileSingleElement
-
-文本
-  → reconcileSingleTextNode
-
-数组
-  → reconcileChildrenArray
-
-Fragment
-  → reconcileChildFibers / updateFragment
-
-空值
-  → 删除剩余旧子树
+单个 React Element → 处理单个元素
+文本               → 处理文本节点
+数组               → 处理数组 Diff
+Fragment           → 处理 Fragment 子树
+空值               → 删除剩余旧子树
 ```
 
-### 9.12.1.1 一次数组 Diff 的执行过程
+### 9.12.3 一次数组 Diff 的执行过程
 
 ```mermaid
 flowchart TD
@@ -1032,32 +1076,74 @@ flowchart TD
 以旧列表 `[A, B, C]` 变成 `[B, A, D]` 为例：
 
 ```text
-旧 Fiber：A(key=a) -> B(key=b) -> C(key=c)
+旧 Fiber：A(key=a) → B(key=b) → C(key=c)
 新节点 1：B(key=b)，复用旧 B，位置发生变化，标记移动
 新节点 2：A(key=a)，复用旧 A，位置发生变化，标记移动
 新节点 3：D(key=d)，旧 Map 中没有，创建新 Fiber，标记插入
 旧 C(key=c) 未被使用，标记删除
 ```
 
-`key` 表达的是数据身份，`placeChild` 负责把匹配结果转换成插入或移动标记，Commit 阶段再根据这些标记操作 DOM。Diff 阶段本身不直接移动浏览器节点。
+### 9.12.4 首次挂载和后续更新
 
-### 9.12.2 Mount 和 Update 的差别
-
-React 会区分首次挂载和更新：
+首次挂载没有可比较的旧子树：
 
 ```text
-mountChildFibers
-  → 新树第一次建立，通常不需要记录旧树的删除副作用
-
-reconcileChildFibers
-  → 已有 current 子树，需要追踪插入、移动和删除
+旧树为空
+  ↓
+创建新的子 Fiber
+  ↓
+通常不需要记录旧节点删除
+  ↓
+Commit 插入新节点
 ```
 
-首次挂载时，所有节点都是新建的；更新时，React 才需要对比旧 Fiber。
+后续更新则需要比较旧子树：
 
-### 9.12.3 重要源码函数
+```text
+读取 current 子 Fiber
+  ↓
+尝试按位置、key 和类型匹配
+  ↓
+复用或创建 Fiber
+  ↓
+记录移动、插入和删除
+  ↓
+Commit 应用标记
+```
 
-阅读数组 Diff 时，可以关注：
+协调逻辑需要知道当前是否应追踪这些副作用。首次挂载和更新路径的布尔参数或函数分支，主要就是在表达这个差异。
+
+### 9.12.5 Commit 如何应用协调结果
+
+Diff 阶段完成后，Commit 阶段才会把标记转换成宿主操作：
+
+```text
+协调阶段：决定需要插入、移动、更新或删除什么
+  ↓
+Commit 阶段：找到宿主节点并执行 DOM 操作
+  ↓
+浏览器：重新计算页面并绘制结果
+```
+
+因此，可以把 Reconciliation 理解为“计算身份和变化”，把 Commit 理解为“应用已经计算出的变化”。
+
+### 9.12.6 源码导航入口：用于定位，不是必须背诵
+
+理解列表更新的用户时间线后，可以按下面顺序阅读：
+
+**进入子节点协调：**
+
+```text
+beginWork
+  ↓
+updateFunctionComponent / updateHostComponent
+  ↓
+reconcileChildren
+  ↓
+reconcileChildFibers
+```
+
+**数组 Diff：**
 
 ```text
 reconcileChildrenArray
@@ -1065,40 +1151,19 @@ updateSlot
 updateFromMap
 mapRemainingChildren
 placeChild
-deleteChild
-deleteRemainingChildren
+```
+
+**创建、复用和删除：**
+
+```text
 useFiber
 createChild
+deleteChild
+deleteRemainingChildren
+shouldTrackSideEffects
 ```
 
-它们分别参与：
-
-```text
-按位置尝试匹配
-根据 key 和类型复用
-建立剩余旧节点 Map
-标记插入或移动
-记录删除
-创建新 Fiber
-```
-
-### 9.12.4 `shouldTrackSideEffects`
-
-协调逻辑需要知道当前是否应记录删除等副作用：
-
-```text
-首次挂载
-  → 旧树为空，通常不需要删除旧节点
-
-更新
-  → 需要追踪旧节点删除、插入和移动
-```
-
-源码中的布尔参数或路径差异用于区分这两类情况。
-
-### 9.12.5 Commit 端的相关入口
-
-Diff 标记完成后，Commit 阶段会处理：
+**Commit 端：**
 
 ```text
 commitMutationEffects
@@ -1108,7 +1173,7 @@ commitUpdate
 insertOrAppendPlacementNode
 ```
 
-协调算法只决定“需要做什么”，宿主配置和 Commit 逻辑负责“如何对 DOM 做”。
+这些名称用于定位“匹配身份 → 记录标记 → Commit 应用”的实现。它们不是业务 API，具体函数名、参数和调用关系要以目标 React 版本为准。
 
 ## 9.13 真实业务场景
 

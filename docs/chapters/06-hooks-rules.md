@@ -1557,69 +1557,149 @@ function useSearchResults(query: string) {
 
 ## 6.13 源码阅读：从 `useState` 追踪到 Hook 链表
 
-### 6.13.1 公共 API 只是入口
+这一节先从用户能观察到的 State 变化开始，再解释 Hook 链表和更新队列如何承载这次变化。源码函数名放在最后作为导航入口，用来定位实现，不要求先背下来。
 
-业务代码写的是：
+### 6.13.1 先看一次点击如何改变页面
 
 ```tsx
-const [count, setCount] = useState(0);
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  function handleClick() {
+    setCount((current) => current + 1);
+  }
+
+  return <button onClick={handleClick}>{count}</button>;
+}
 ```
 
-阅读源码时，可以沿着以下方向寻找：
+用户看到的是按钮从 `0` 变成 `1`。可以把这次变化展开成一条时间线：
 
 ```text
-react 包导出的 useState
+首次 Render
   ↓
-resolveDispatcher()
+React 为 useState(0) 保存状态，并返回 count 和 setCount
   ↓
-当前 Dispatcher.useState
+Commit，把按钮文本 "0" 提交到 DOM
+
+用户点击按钮
   ↓
-mountState 或 updateState
+事件处理函数调用 setCount
   ↓
-mountWorkInProgressHook 或 updateWorkInProgressHook
+React 记录一条“基于旧值加一”的 Update
+  ↓
+当前 DOM 仍然显示 "0"
+  ↓
+React 调度下一次 Render
+  ↓
+Render 消费 Update，得到新的 State 1
+  ↓
+Commit，把按钮文本更新为 "1"
 ```
 
-`resolveDispatcher` 的意义是：公共 Hook API 不直接决定当前是首次渲染还是后续更新，而是从当前 React 渲染上下文中取得 Dispatcher。
+调用 Setter 的瞬间不会直接改写当前 Render 中的 `count`。Setter 提交的是一条更新记录，下一次 Render 才会根据这条记录计算新 State。这就是为什么一次事件中的 State 仍然体现当前 Render 的快照。
 
-### 6.13.2 首次渲染路径
+如果组件有多个 Hook，React 还需要知道每个状态属于哪一次 Hook 调用。它通过稳定的调用顺序把 Hook 节点串起来：
 
-首次调用 `useState` 的简化路径：
+```tsx
+function Panel() {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 每次 Render 都要保持这三个 Hook 的顺序
+  return null;
+}
+```
 
 ```text
-renderWithHooks
+Fiber.memoizedState
   ↓
-设置 Mount Dispatcher
-  ↓
-useState(initialState)
-  ↓
-mountState
-  ↓
-mountStateImpl
-  ↓
+第一个 Hook：open
+  ↓ next
+第二个 Hook：query
+  ↓ next
+第三个 Hook：inputRef
+```
+
+这也是 Hook 不能放进条件、循环或嵌套函数的根本原因：如果调用顺序变化，下一次 Render 就可能把旧状态读给错误的 Hook。
+
+### 6.13.2 首次挂载：创建 Hook 和更新队列
+
+首次调用 `useState` 时，React 会为当前组件创建 Hook 节点，保存初始值，并创建用于接收后续 Update 的队列：
+
+```text
 创建 Hook
   ↓
 保存初始 memoizedState
   ↓
-创建 queue
+创建 UpdateQueue
   ↓
-创建 dispatch
+创建并绑定 dispatch
   ↓
 返回 [state, dispatch]
 ```
 
-队列大致包含：
+队列可以先理解为：
 
 ```text
-queue
-├─ pending：待处理更新
-├─ dispatch：提交更新的函数
-├─ lanes：相关优先级信息
-└─ lastRenderedReducer：状态处理函数
+UpdateQueue
+├─ pending：尚未被当前 Render 消费的更新
+├─ dispatch：提交更新的 Setter
+├─ lanes：更新所属的工作集合
+└─ reducer：如何根据旧 State 和 action 得到新 State
 ```
 
-不同 React 版本的具体字段可能不同，应以目标版本源码为准。
+不同 React 版本的字段和队列实现可能变化，但用户可观察到的关系稳定：首次 Render 得到状态和 Setter，之后调用 Setter 会把 Update 放回这个组件对应的队列。
 
-### 6.13.3 Hook 链表如何连接 UpdateQueue
+### 6.13.3 更新渲染：按 Hook 顺序读取并计算
+
+组件因为 State 更新再次 Render 时，React 会按相同顺序读取已有 Hook，并处理队列中的 Update：
+
+```text
+更新 Render
+  ↓
+按调用顺序找到对应 Hook
+  ↓
+读取 Hook 队列中的待处理 Update
+  ↓
+根据当前 Render 选择的优先级处理可处理的 Update
+  ↓
+保存新的 memoizedState
+  ↓
+返回新的 [state, dispatch]
+```
+
+`useState` 的值更新和函数式更新都可以用基础 Reducer 表达：
+
+```ts
+function basicStateReducer<S>(
+  state: S,
+  action: S | ((state: S) => S),
+): S {
+  return typeof action === 'function'
+    ? (action as (state: S) => S)(state)
+    : action;
+}
+```
+
+因此下面两种写法都会进入同一个“根据旧值计算新值”的模型：
+
+```tsx
+setCount(10);
+setCount((current) => current + 1);
+```
+
+如果一次事件中连续提交多个函数式更新，React 会按队列顺序依次计算：
+
+```text
+初始 state = 0
+Update 1：previous => previous + 1，结果 1
+Update 2：previous => previous + 1，结果 2
+最终 memoizedState = 2
+```
+
+### 6.13.4 Hook 链表如何连接 UpdateQueue
 
 ```mermaid
 classDiagram
@@ -1653,96 +1733,88 @@ classDiagram
   UpdateQueue --> Update : pending
 ```
 
-首次渲染时，React 依次创建 Hook 节点，并把第一个节点挂到 Fiber 的 `memoizedState`。后续渲染时，React 按调用顺序移动当前 Hook 指针，因此“不能在条件、循环或嵌套函数中调用 Hook”最终表现为链表节点对应关系发生变化。
+这张图可以用两个问题来阅读：
+
+- `Fiber.memoizedState` 解决“这个组件有哪些 Hook，顺序是什么”；
+- `Hook.queue` 解决“这个 State 还有哪些更新等待处理”。
 
 一次 `setCount` 的数据变化可以写成：
 
 ```text
 调用前：Hook.memoizedState = 0，queue.pending = null
 调用后：queue.pending = Update(action, lane)
-Render：Reducer(0, action) 得到 1
-完成后：Hook.memoizedState = 1，当前 pending Update 被消费
+下一次 Render：Reducer(0, action) 得到 1
+Render 完成：Hook.memoizedState = 1，当前 Update 被消费
+Commit 完成：DOM 显示新的文本
 ```
 
-这段关系图解决的是“State 保存在哪里”和“更新记录放在哪里”两个问题；下面的更新路径继续解释 React 如何在下一次 Render 中消费这条记录。
+### 6.13.5 Setter 如何把更新送入调度
 
-### 6.13.4 更新渲染路径
+从行为上看，Setter 完成的是“记录并请求处理”，不是“直接修改 State”：
 
-更新时：
+```text
+调用 setCount
+  ↓
+为当前 Fiber 的这个 Hook 创建 Update
+  ↓
+为 Update 分配 Lane
+  ↓
+把 Update 放入队列
+  ↓
+沿 Fiber 关系找到 Root 并标记待处理工作
+  ↓
+安排下一次 Render
+  ↓
+Render 消费队列并计算新 State
+  ↓
+Commit 更新 DOM
+```
+
+并发模式下，更新可能经过更多队列、优先级和恢复路径。阅读 Hook 链表时，先抓住“创建记录、加入队列、调度 Fiber、下一轮读取”这条主线即可。
+
+### 6.13.6 源码导航入口：用于定位，不是必须背诵
+
+理解上面的用户时间线后，再按下面的顺序进入源码：
+
+```text
+公共 useState
+  ↓
+resolveDispatcher
+  ↓
+当前 Dispatcher.useState
+  ↓
+mountState 或 updateState
+  ↓
+mountWorkInProgressHook 或 updateWorkInProgressHook
+```
+
+首次挂载可以重点查找：
 
 ```text
 renderWithHooks
-  ↓
-设置 Update Dispatcher
-  ↓
-useState(initialState)
-  ↓
+mountState
+mountStateImpl
+```
+
+更新和队列消费可以重点查找：
+
+```text
 updateState
-  ↓
 updateReducer
-  ↓
 updateWorkInProgressHook
-  ↓
-读取待处理更新
-  ↓
-根据当前渲染优先级处理队列
-  ↓
-保存新的 memoizedState
-  ↓
-返回 [state, dispatch]
+basicStateReducer
 ```
 
-`useState` 的更新实现和 `useReducer` 共享大量机制。可以把 `useState` 理解为使用内置基础 Reducer 的一种简化状态 API：
-
-```ts
-function basicStateReducer<S>(
-  state: S,
-  action: S | ((state: S) => S),
-): S {
-  return typeof action === 'function'
-    ? (action as (state: S) => S)(state)
-    : action;
-}
-```
-
-### 6.13.5 调用 Setter 的路径
-
-调用：
-
-```tsx
-setCount((value) => value + 1);
-```
-
-可以沿着这条简化链路理解：
+Setter 进入调度可以重点查找：
 
 ```text
 dispatchSetState
-  ↓
 requestUpdateLane
-  ↓
-创建 Update
-  ↓
-将 Update 加入并发更新队列
-  ↓
-标记 Fiber 和 Root 的更新
-  ↓
+enqueueConcurrentHookUpdate
 scheduleUpdateOnFiber
-  ↓
-进入调度和 Render
 ```
 
-在并发模式下，更新可能经过更多队列和优先级处理。理解 Hook 链表时，先抓住“创建记录、加入队列、调度 Fiber、下一轮读取”这条主线即可。
-
-### 6.13.6 为什么源代码不能直接当成 API 文档
-
-源码中的函数名和字段适合回答“React 大致如何实现”，但不适合直接作为业务契约：
-
-- 内部字段可能在小版本中改变；
-- 开发环境和生产环境路径不同；
-- React Compiler、并发特性和新 API 可能增加新的处理层；
-- 构建产物可能经过压缩和分支裁剪。
-
-阅读源码时，应把稳定的行为模型和容易变化的实现细节分开记录。
+这些名称是源码导航入口，不是业务 API。React 版本不同，字段、队列实现和调用关系可能变化；阅读时应先验证当前版本，再用“Hook 顺序 → Update 入队 → Render 消费 → Commit 更新”这条稳定行为链解释细节。
 
 ## 6.14 常见错误与修复方式
 

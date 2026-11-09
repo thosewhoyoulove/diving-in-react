@@ -938,43 +938,114 @@ function handleClick() {
 
 ## 8.13 源码阅读：可中断 Render 的入口
 
-### 8.13.1 从 Root 调度到 Render
+这一节先从用户正在输入、页面同时更新的场景开始，再解释 React 如何暂停、恢复或重启 Render。源码函数名放在最后作为导航入口；先理解页面为什么仍然保持一致，再看具体实现。
 
-可以先关注这条抽象路径：
+### 8.13.1 先看搜索交互的用户时间线
 
-```text
-scheduleUpdateOnFiber
-  ↓
-ensureRootIsScheduled
-  ↓
-调度一个 Root 任务
-  ↓
-performConcurrentWorkOnRoot
-  ↓
-renderRootConcurrent
-  ↓
-workLoopConcurrent
+```tsx
+function SearchBox() {
+  const [input, setInput] = useState('');
+  const [query, setQuery] = useState('');
+
+  function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextValue = event.target.value;
+    setInput(nextValue);
+
+    startTransition(() => {
+      setQuery(nextValue);
+    });
+  }
+
+  return (
+    <>
+      <input value={input} onChange={handleChange} />
+      <SearchResults query={query} />
+    </>
+  );
+}
 ```
 
-如果更新必须同步处理，路径可能进入：
+用户输入一个字符时，可以先按两条更新来观察：
 
 ```text
-performSyncWorkOnRoot
+输入事件到达
   ↓
-renderRootSync
+input 更新需要尽快反馈
   ↓
-workLoopSync
+query 更新被标记为 Transition
+  ↓
+React 开始计算结果列表
+  ↓
+如果工作量大，Render 在工作单元之间暂停
+  ↓
+浏览器先处理输入和其他紧急任务
+  ↓
+React 稍后继续结果列表的 Render
+  ↓
+Render 完成后一次性 Commit 新结果
 ```
 
-### 8.13.2 一次可中断 Render 的状态变化
+暂停期间，输入框和已提交的结果仍然是上一版完整 UI。React 不会把一半新结果写进 DOM，再把另一半留到下一帧；只有完成并通过检查的结果才会进入 Commit。
+
+如果用户在结果列表尚未完成时继续输入：
+
+```text
+旧 Transition Render 正在进行
+  ↓
+新的输入更新进入 Root
+  ↓
+React 重新比较各个 Lane 的紧迫程度
+  ↓
+优先处理新的输入
+  ↓
+旧结果 Render 可能继续、重启或被放弃
+  ↓
+最终只 Commit 与最新状态一致的结果
+```
+
+这就是“可中断”的用户含义：React 可以暂停内部计算，把控制权交给浏览器和更紧急的更新，同时保持已提交界面的完整性。
+
+### 8.13.2 从 Root 调度到可让出的工作循环
+
+把上面的行为翻译成概念流程：
+
+```text
+更新进入 Root
+  ↓
+选择本次要处理的 Lanes
+  ↓
+准备 WorkInProgress 树
+  ↓
+按工作单元执行 Render
+  ↓
+检查是否需要让出控制权
+  ├─ 需要让出 → 保存当前位置，稍后恢复
+  └─ 不需要让出 → 继续直到 Render 完成
+  ↓
+Render 完成后进入 Commit
+```
+
+同步更新可能走另一条路径：
+
+```text
+同步更新
+  ↓
+同步 Render
+  ↓
+同步 Commit
+```
+
+同步或并发描述的是 React 如何安排这次工作，不代表网络请求、计算或 JavaScript 自动运行在其他线程。
+
+### 8.13.3 暂停、恢复和重启的状态变化
 
 ```mermaid
 flowchart TD
   A[Root 任务开始] --> B[选择 nextLanes]
   B --> C[创建 WorkInProgress 树]
-  C --> D[workLoopConcurrent 处理 Fiber]
-  D --> E{shouldYield?}
-  E -->|是| F[保存当前工作单元]
+  C --> D[处理一个或多个 Fiber 工作单元]
+  D --> E{需要让出控制权?}
+  E -->|是| F[保存当前工作位置]
   F --> G[把控制权交还浏览器]
   G --> H[稍后恢复 Root 任务]
   H --> D
@@ -983,36 +1054,27 @@ flowchart TD
   I -->|是| J[Commit 整棵结果树]
 ```
 
-暂停发生在 Render 工作单元之间，已经提交的 DOM 不会被并发 Render 改成半新半旧。恢复时 React 还要重新检查 Root 上是否出现了更高优先级的 Lane；如果出现，当前工作可能被重启或改选。
-
 一次过程可以记录为：
 
 ```text
-开始：Root.pendingLanes = TransitionLane
-处理：完成 Header，当前指针停在 ResultList
+开始：Root.pendingLanes 包含 TransitionLane
+处理：完成 Header，当前工作位置停在 ResultList
 让出：WorkInProgress 保留，current DOM 仍是旧结果
 插入输入更新：Root.pendingLanes 同时包含 SyncLane
 恢复：优先完成 SyncLane，再继续或重做 TransitionLane
 提交：只提交完成且通过一致性检查的结果
 ```
 
-### 8.13.3 `performConcurrentWorkOnRoot`
+因此，`current` 表示已提交结果，WorkInProgress 表示正在计算的结果。暂停不会把 WorkInProgress 的半成品直接展示给用户。
 
-这个入口需要处理：
+### 8.13.4 如何理解一次 Root 工作
 
-- 当前 Root 有哪些待处理 Lane；
-- 本次应该使用同步还是并发 Render；
-- Render 是否完成；
-- Render 是否被挂起；
-- 是否需要继续安排任务；
-- 是否进入 Commit。
-
-可以用伪代码表示：
+可以用下面的伪代码描述职责，不必把它当成 React 的原始实现：
 
 ```ts
-function performConcurrentWorkOnRoot(root: FiberRoot) {
+function performWorkOnRoot(root: FiberRoot) {
   const lanes = getNextLanes(root);
-  const exitStatus = renderRootConcurrent(root, lanes);
+  const exitStatus = renderRoot(root, lanes);
 
   if (exitStatus === RootCompleted) {
     commitRoot(root);
@@ -1022,40 +1084,54 @@ function performConcurrentWorkOnRoot(root: FiberRoot) {
 }
 ```
 
-真实逻辑还会处理 Suspense、错误、恢复、Passive Effects 和优先级变化。
+这里的关键不是函数体，而是三种结果：
 
-### 8.13.4 `renderRootConcurrent`
+- Render 完成：进入 Commit；
+- Render 暂停：保留工作并继续安排任务；
+- Render 出错或被更高优先级更新打断：处理错误、改选工作或重新开始。
 
-```ts
-function renderRootConcurrent(root: FiberRoot, lanes: Lanes) {
-  prepareFreshStack(root, lanes);
+真实实现还要处理 Suspense、错误恢复、Passive Effects 和优先级变化。
 
-  do {
-    try {
-      workLoopConcurrent();
-      break;
-    } catch (error) {
-      handleRenderError(root, error);
-    }
-  } while (true);
+### 8.13.5 Scheduler 时间判断和 Lane 优先级
 
-  return getRootExitStatus(root);
-}
-```
-
-重点不是伪代码中的具体实现，而是：
+Scheduler 需要判断当前是否适合继续执行一段 JavaScript 工作；React 还要根据 Root 上的 Lane 决定哪些更新更紧急。这是两个不同层次：
 
 ```text
-准备 WorkInProgress
-  ↓
-运行可让出的工作循环
-  ↓
-根据完成、暂停或错误返回状态
+Lane：这批更新有多紧急、应该先处理什么
+Scheduler：当前时间是否适合继续执行工作
 ```
 
-### 8.13.5 `shouldYieldToHost`
+让出控制权并不等于丢弃更新。没有完成的工作会保留必要的更新记录，之后再选择合适的 Lane 继续处理。业务代码仍然需要自己处理请求取消和过期响应，因为它们属于外部副作用层。
 
-Scheduler 内部通常会有判断是否让出宿主环境的逻辑，名称可能类似：
+### 8.13.6 源码导航入口：用于定位，不是必须背诵
+
+理解用户时间线后，可以按下面顺序查找：
+
+**Root 调度和 Render 入口：**
+
+```text
+scheduleUpdateOnFiber
+  ↓
+ensureRootIsScheduled
+  ↓
+performConcurrentWorkOnRoot
+  ↓
+renderRootConcurrent
+  ↓
+workLoopConcurrent
+```
+
+**同步路径：**
+
+```text
+performSyncWorkOnRoot
+  ↓
+renderRootSync
+  ↓
+workLoopSync
+```
+
+**可让出和宿主回调：**
 
 ```text
 shouldYieldToHost
@@ -1064,22 +1140,16 @@ getCurrentTime
 requestHostCallback
 ```
 
-阅读时要注意：
+**准备、恢复和提交：**
 
-- Scheduler 的时间判断和 React 的 Lane 优先级是两个层次；
-- `shouldYield` 只表示当前是否适合继续执行一段工作；
-- 是否重新开始 Render 还取决于 Root 上的更新和树状态。
+```text
+prepareFreshStack
+performUnitOfWork
+commitRoot
+getNextLanes
+```
 
-### 8.13.6 版本差异
-
-React 18/19 的并发实现会持续演进：
-
-- 内部函数名可能变化；
-- Scheduler 的宿主实现可能变化；
-- Lane 组合和恢复策略可能变化；
-- Server Components 和新异步 API 可能引入额外路径。
-
-阅读源码时，先验证当前分支和构建版本，再把稳定概念与实现细节分开记录。
+这些名称用于源码导航，不是业务 API，也不保证不同 React 版本保持相同的调用顺序。阅读时优先验证“选择 Lane → 准备工作树 → 处理工作单元 → 让出或继续 → 完成后 Commit”这条行为链。
 
 ## 8.14 业务中的并发更新设计
 

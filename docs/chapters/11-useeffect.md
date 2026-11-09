@@ -923,81 +923,285 @@ function Clock() {
 
 ## 11.13 源码阅读：Effect 如何进入 Fiber
 
-### 11.13.1 Hook API 到 Dispatcher
+这一节先不要求你记住源码函数名。先从一个用户真正能观察到的例子开始，再把这条时间线对应到 React 内部的 Render、Commit 和 Passive Effect 阶段。这样阅读源码时，每个函数名都会对应一个已经理解的动作。
+
+### 11.13.1 先看用户视角的执行时间线
+
+下面的组件在房间变化时建立新连接，在旧连接失效时断开连接：
+
+```tsx
+function ChatRoom({ roomId }: { roomId: string }) {
+  useEffect(() => {
+    const connection = createConnection(roomId);
+    connection.connect();
+
+    return () => {
+      connection.disconnect();
+    };
+  }, [roomId]);
+
+  return <p>当前房间：{roomId}</p>;
+}
+```
+
+把 `roomId` 的变化展开，可以得到四段时间线。
+
+**第一次挂载：**
 
 ```text
-useEffect(create, deps)
+组件函数执行
   ↓
-resolveDispatcher()
+调用 useEffect，记录 setup 和 [roomId]
+  ↓
+Render 完成
+  ↓
+Commit，把 <p> 提交到 DOM
+  ↓
+React 在 Passive Effect 阶段执行 setup
+  ↓
+建立 roomId 对应的连接
+```
+
+这里的 `setup` 就是 `useEffect` 的第一个函数。调用 `useEffect` 的那一刻，连接还没有建立；它只是告诉 React：“这次 Render 之后需要同步一个外部系统”。
+
+**`roomId` 改变：**
+
+```text
+组件函数使用新的 roomId 再次执行
+  ↓
+React 比较这次的 [roomId] 和上一次的 [roomId]
+  ↓
+发现依赖发生变化
+  ↓
+Render 完成并 Commit
+  ↓
+清理上一次 Effect：断开旧连接
+  ↓
+执行这一次 Effect：建立新连接
+```
+
+清理函数不是只在卸载时执行。依赖变化时，React 也会先清理旧的同步关系，再建立新的同步关系。这样可以保证同一时刻只保留当前 `roomId` 对应的连接。
+
+**`roomId` 没有改变：**
+
+```text
+组件函数仍然可能重新执行
+  ↓
+React 比较新旧依赖，发现值相同
+  ↓
+这一次不执行旧 cleanup，也不执行新的 setup
+```
+
+组件发生重新 Render，并不代表每个 Effect 都要重新运行。依赖数组决定这个 Effect 是否需要重新同步。
+
+**组件卸载：**
+
+```text
+组件从页面移除
+  ↓
+执行最后一次 cleanup
+  ↓
+断开连接
+```
+
+因此，完整规则可以先记成一句话：
+
+```text
+Render 期间记录“要同步什么”
+Commit 之后执行 setup
+依赖变化或组件卸载时执行 cleanup
+```
+
+### 11.13.2 为什么 Effect 要分成 Render 和 Commit 两步？
+
+React 的 Render 阶段负责计算下一版 UI。这个阶段可能因为并发调度、优先级变化或错误恢复而被暂停、重新执行，甚至直接丢弃。如果连接、订阅、请求这类外部副作用在 Render 期间就执行，就可能为一版最终没有显示的 UI 建立资源。
+
+所以 `useEffect` 的回调不会在组件函数执行到这一行时立即运行。Render 阶段只做两件事：
+
+- 记录这次 Effect 的 `setup` 函数和依赖数组；
+- 判断这个 Effect 在这次提交中是否需要重新执行。
+
+Commit 阶段先把本次 UI 变化提交到 DOM。提交完成后，React 再调度 `useEffect` 对应的 Passive Effect。常规情况下，浏览器有机会先绘制页面；具体时序仍由 React 的调度决定，因此不能把它理解为一个固定的 `setTimeout`。需要在 DOM 提交后、浏览器绘制前读取或修正布局时，应考虑 `useLayoutEffect`。
+
+可以把两阶段理解成：
+
+```text
+Render
+  ├─ 执行组件函数
+  ├─ 创建或读取 Hook 节点
+  ├─ 比较依赖数组
+  └─ 记录本次是否需要 Effect
+
+Commit
+  ├─ 把 UI 变化提交到 DOM
+  ├─ 处理需要清理的旧 Effect
+  └─ 在 Passive Effect 阶段执行新的 setup
+```
+
+这个分离也是 Effect 能安全处理并发 Render 的关键：只有已经 Commit 的结果，才会对外部系统产生同步动作。
+
+### 11.13.3 首次挂载：`useEffect` 如何被记录
+
+首次 Render 时，组件第一次调用 `useEffect`。React 会为当前 Fiber 创建对应的 Hook 节点，并在这个 Hook 上记录 Effect 描述。可以先把它理解成一张待办卡片：
+
+```text
+Effect 描述
+├─ create：以后要执行的 setup 函数
+├─ deps：决定何时重新同步的依赖数组
+└─ flags：这是 Passive Effect，且首次需要执行
+```
+
+这张卡片还没有执行 `create`。它只是被挂到当前 Fiber 相关的数据结构上，等待 Commit 完成后处理。与此同时，Hook 节点会按调用顺序进入组件的 Hook 链表。
+
+调用路径可以概括为：
+
+```text
+组件调用 useEffect
+  ↓
+React 找到当前 Render 使用的 Hook Dispatcher
+  ↓
+首次挂载走 mount 路径
+  ↓
+创建 Hook 节点和 Effect 描述
+  ↓
+给当前 Fiber 记录 Passive Effect 标记
+  ↓
+Commit 后再执行 setup
+```
+
+这里的 Fiber 可以先理解为 React 保存组件工作状态的一条内部记录。Effect 进入 Fiber，意思是“这次 Render 产生的同步任务被 React 记录下来”，不是“Effect 回调已经运行”。
+
+### 11.13.4 后续更新：依赖数组决定是否重新同步
+
+组件再次 Render 时，React 会按照相同的 Hook 调用顺序找到上一次的 Hook，并读取旧的依赖数组。然后逐项比较新旧依赖，比较语义接近 `Object.is`。
+
+```text
+读取当前 Hook 和上一次的 Hook
+  ↓
+比较新旧 deps
+  ↓
+依赖相同 ──→ 记录为本次不需要执行
+依赖不同 ──→ 标记为本次需要执行
+```
+
+常见情况可以这样理解：
+
+- 没有传依赖数组：每次 Commit 后都需要重新执行；
+- 传入空数组 `[]`：首次挂载后执行，后续更新通常跳过，卸载时清理；
+- 传入 `[roomId]`：只有 `roomId` 变化时重新同步；
+- 依赖中放入对象、数组或函数：只要引用变化，就可能被认为依赖变化。
+
+如果依赖没有变化，React 仍然可以记录这次 Render 的 Effect 信息，但不会为这个 Effect 设置“本次需要执行”的标记，因此不会调用新的 setup，也不会调用上一次 cleanup。如果依赖发生变化，React 会把它标记为需要执行；Commit 后会先清理旧的同步关系，再执行新的 setup。
+
+这也解释了为什么依赖数组必须写真实的同步输入：它不是“控制回调执行次数的优化参数”，而是在告诉 React：“当这些值变化时，旧的外部同步关系已经不再适用”。
+
+### 11.13.5 Fiber 中的两类关联数据
+
+阅读源码时，经常会同时看到 Hook 链表和 Effect 队列。它们承担的任务不同：
+
+```text
+Fiber
+├─ memoizedState → 按调用顺序保存 Hook 节点
+│                  例如 state、ref、effect 对应的 Hook
+└─ updateQueue   → 组织本次需要处理的 Effect 描述
+                   例如 create、deps 和执行标记
+```
+
+可以用一个简单比喻理解它们的分工：Hook 链表回答“这个组件第几个 Hook 是什么”，Effect 队列回答“这次提交有哪些同步任务需要处理”。不同 React 版本的字段名、链表实现和队列组织方式可能变化，但核心关系比较稳定：
+
+```text
+Render 读取或创建 Hook
+  ↓
+Render 记录 Effect 描述和执行标记
+  ↓
+Commit 根据标记处理 cleanup 和 setup
+```
+
+### 11.13.6 Commit 后的 Passive Effect 阶段
+
+`useEffect` 对应的是 Passive Effect。它和 DOM 更新属于不同的处理步骤：
+
+```text
+组件 Render 完成
+  ↓
+Commit 提交 DOM 变化
+  ↓
+React 调度 Passive Effect
+  ↓
+处理旧 Effect 的 cleanup
+  ↓
+处理新 Effect 的 setup
+```
+
+对于依赖变化的 Effect，旧的 cleanup 和新的 setup 必须成对出现：旧连接、旧订阅或旧请求先退出，新连接、新订阅或新请求再建立。对于卸载的组件，只执行 cleanup，不会再建立新的 setup。
+
+这也是下面这些现象的来源：
+
+- `useEffect` 的 setup 不会在 Render 中同步执行；
+- 组件函数重新执行时，Effect 不一定重新执行；
+- 依赖变化会触发“旧 cleanup → 新 setup”；
+- 卸载组件会触发最后一次 cleanup；
+- Render 被放弃时，其中记录但尚未 Commit 的 Effect 不应建立外部资源。
+
+### 11.13.7 源码导航入口：用于定位，不是必须背诵
+
+理解上面的时间线后，再看源码函数名会更容易。以下名称是阅读入口，用来定位不同阶段的实现；它们不是面试时必须逐个背诵的 API，也不保证在所有 React 版本中保持完全相同的文件路径和字段结构。
+
+**从公开 Hook 进入 Render 阶段：**
+
+```text
+useEffect
+  ↓
+resolveDispatcher
   ↓
 currentDispatcher.useEffect
   ↓
 mountEffect 或 updateEffect
 ```
 
-首次调用和后续更新会经过不同路径。
-
-### 11.13.2 Mount Effect
-
-简化过程：
+**记录首次挂载和更新信息：**
 
 ```text
-mountEffect
-  ↓
-创建 Hook 节点
-  ↓
-创建 Effect 描述
-  ↓
-保存 create 和 deps
-  ↓
-给 Fiber 添加 Passive 标记
+mountEffectImpl
+updateEffectImpl
+pushSimpleEffect
+HookHasEffect
+Passive
 ```
 
-### 11.13.3 Update Effect
-
-更新时：
+这一组函数和标记主要回答：
 
 ```text
-读取旧 Hook
-  ↓
-比较新旧 deps
-  ↓
-依赖相同 → 可以复用或跳过执行
-依赖不同 → 标记需要重新执行
+Hook 节点在哪里创建？
+依赖数组在哪里比较？
+本次 Effect 是否被标记为需要执行？
 ```
 
-依赖比较通常使用类似 `Object.is` 的逐项比较语义。
-
-### 11.13.4 Effect 链表
-
-除了 Hook 链表，Fiber 还需要组织 Effect：
-
-```text
-Fiber
-├─ memoizedState → Hook 链表
-└─ updateQueue   → Effect 链表或相关队列
-```
-
-不同版本的字段和链表组织方式可能改变。核心模型是：Render 记录 Effect，Commit 相关阶段再执行 setup 和 cleanup。
-
-### 11.13.5 Commit Passive Effects
-
-可以关注这些源码入口：
+**从 Commit 进入 Passive Effect：**
 
 ```text
 commitRoot
+  ↓
 flushPassiveEffects
-commitPassiveUnmountEffects
-commitPassiveMountEffects
+  ├─ commitPassiveUnmountEffects
+  └─ commitPassiveMountEffects
 ```
 
-它们帮助回答：
+这一组函数主要回答：
 
 ```text
-旧 Effect 何时清理？
-新 Effect 何时建立？
-卸载子树时如何清理？
+旧 Effect 的 cleanup 何时执行？
+新 Effect 的 setup 何时执行？
+组件卸载时如何清理子树中的 Effect？
 ```
+
+建议的源码阅读顺序是：先从 `useEffect` 的公开入口开始，再跟到 `mountEffect` 或 `updateEffect`，确认依赖比较和标记过程，最后阅读 `commitRoot` 到 `flushPassiveEffects` 的执行链。读源码时优先验证这条行为链：
+
+```text
+记录 → 比较依赖 → 标记 → Commit → cleanup → setup
+```
+
+函数名会随版本变化，但这条行为链就是理解 Effect 如何进入 Fiber 的主线。
 
 ## 11.14 官方行为、源码细节与工程结论
 

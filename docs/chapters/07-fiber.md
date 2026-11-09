@@ -1427,57 +1427,74 @@ DOM 变化
 
 ## 7.15 源码阅读入口
 
-### 7.15.1 从更新进入 Fiber
+这一节先从一次 State 更新在页面上的表现开始，再解释它如何经过 Root、WorkInProgress、Render 和 Commit。源码函数名放在最后，用于定位实现，不是阅读 Fiber 的前置知识。
 
-阅读源码时，可以先沿着这条抽象链路：
+### 7.15.1 先看一次更新的用户时间线
 
-```text
-dispatchSetState
-  ↓
-markUpdateLaneFromFiberToRoot
-  ↓
-scheduleUpdateOnFiber
-  ↓
-ensureRootIsScheduled
-  ↓
-performConcurrentWorkOnRoot
-  ↓
-renderRootConcurrent 或 renderRootSync
+```tsx
+function Page() {
+  const [selected, setSelected] = useState('home');
+
+  return (
+    <>
+      <button onClick={() => setSelected('settings')}>设置</button>
+      <Panel name={selected} />
+    </>
+  );
+}
 ```
 
-不同版本的函数名和调用关系可能变化，但主线通常是：
+用户点击按钮后，页面变化可以按下面的顺序理解：
 
 ```text
-更新进入 Fiber
+点击按钮
   ↓
-找到 Root
+事件处理函数调用 setSelected
   ↓
-根据优先级安排工作
+React 记录这次更新，并把工作标记到对应组件和 Root
+  ↓
+React 创建或准备下一版工作树
+  ↓
+Render 计算新的 Panel 和子树
+  ↓
+Commit 把已完成的结果提交到 DOM
+  ↓
+用户看到 settings 面板
+```
+
+Render 期间，浏览器仍然显示上一版 `home` 面板。即使 Render 被暂停、重启或放弃，已经提交到 DOM 的页面也不会变成半新半旧。只有 Commit 完成后，下一版结果才成为用户可见状态。
+
+Fiber 解决的核心问题是：React 需要把一棵树拆成可以保存、暂停和恢复的工作单元。它不等于“页面自动变快”，而是为调度和分阶段提交提供内部数据结构。
+
+### 7.15.2 更新如何进入 Root 和 Fiber
+
+用户调用 Setter 后，可以先用概念流程理解数据如何向上汇聚：
+
+```text
+State Update
+  ↓
+标记当前组件 Fiber 的待处理工作
+  ↓
+沿 return 关系找到 Root
+  ↓
+Root 记录 pending work
+  ↓
+根据优先级安排任务
   ↓
 创建 WorkInProgress 树
   ↓
 执行 Render
 ```
 
-### 7.15.2 从更新到 Fiber 的数据流
+在一次更新中，`current` 树代表用户当前看到的结果，`workInProgress` 树负责计算下一版结果：
 
-```mermaid
-flowchart TD
-  A[dispatchSetState] --> B[requestUpdateLane]
-  B --> C[标记当前 Fiber 的 lanes]
-  C --> D[沿 return 指针找到 FiberRoot]
-  D --> E[Root.pendingLanes 加入当前 Lane]
-  E --> F[ensureRootIsScheduled]
-  F --> G[创建 WorkInProgress 树]
-  G --> H[beginWork 向下计算]
-  H --> I[completeWork 向上收集 flags]
-  I --> J{Render 是否完成}
-  J -->|暂停或重启| G
-  J -->|完成| K[commitRoot]
-  K --> L[修改宿主 DOM]
+```text
+FiberRoot.current
+  ├─ current Fiber：已经提交的结果
+  └─ workInProgress Fiber：正在计算的下一版结果
 ```
 
-一次更新中，`current` 树仍然代表用户正在看到的结果，`workInProgress` 树负责计算下一版结果。Render 被暂停时，React 可以保留或重建工作树；只有 Commit 完成后，下一版结果才会成为用户可见状态。
+`alternate` 连接同一位置上的两棵树。Render 可以在 WorkInProgress 树上反复计算，Commit 成功后，React 再把完成的树切换为当前结果。
 
 ```mermaid
 classDiagram
@@ -1508,11 +1525,80 @@ classDiagram
   Fiber --> HostNode : stateNode
 ```
 
-`alternate` 连接 current Fiber 和 WorkInProgress Fiber，`flags` 记录 Render 阶段计算出的提交计划，`stateNode` 在宿主节点 Fiber 上连接真实 DOM。它们分别承担树版本、提交计划和宿主对象连接三个职责。
+这些字段可以先按职责理解：`child`、`sibling`、`return` 描述树关系，`alternate` 连接两版 Fiber，`flags` 记录提交计划，`stateNode` 在宿主节点上连接真实 DOM。
 
-### 7.15.3 从 Render 进入树遍历
+### 7.15.3 Render 如何遍历 Fiber 树
 
-Render 内部可以关注：
+Render 不是一次递归调用就完成整棵树，而是不断处理工作单元。对一个 `App → Header、Main、Footer` 的树，可以先理解为：
+
+```text
+进入 App
+  ↓
+进入 child：Header
+  ↓
+Header 没有 child，完成 Header
+  ↓
+进入 sibling：Main
+  ↓
+完成 Main，再进入 sibling：Footer
+  ↓
+完成 Footer
+  ↓
+沿 return 回到并完成 App
+```
+
+这条遍历规则让 React 能够在工作单元之间暂停：
+
+```text
+有 child → 先进入 child
+没有 child → complete 当前节点
+有 sibling → 进入 sibling
+没有 sibling → 沿 return 回到父节点
+```
+
+如果时间预算耗尽，React 可以保存下一个工作单元，稍后从那里继续。若期间出现更紧急的更新，React 可以选择新的 Lane，继续、重启或放弃当前 WorkInProgress。
+
+### 7.15.4 Commit 如何把结果交给浏览器
+
+Render 只是在 React 内部计算结果和提交计划。Commit 才会把这些计划应用到宿主环境：
+
+```text
+Render 完成
+  ↓
+Before Mutation：读取或处理提交前工作
+  ↓
+Mutation：插入、删除或更新 DOM
+  ↓
+Layout：处理布局相关 Effect
+  ↓
+Passive：调度 useEffect
+  ↓
+浏览器进行样式、布局、绘制和合成
+```
+
+因此，“组件函数执行完成”不等于“用户已经看到新页面”。完整链路还包括 React Commit 和浏览器自己的布局绘制。
+
+### 7.15.5 源码导航入口：用于定位，不是必须背诵
+
+理解上面的用户时间线后，可以按下面顺序阅读：
+
+**从更新进入 Root：**
+
+```text
+dispatchSetState
+  ↓
+markUpdateLaneFromFiberToRoot
+  ↓
+scheduleUpdateOnFiber
+  ↓
+ensureRootIsScheduled
+  ↓
+performConcurrentWorkOnRoot
+  ↓
+renderRootConcurrent 或 renderRootSync
+```
+
+**Render 工作循环：**
 
 ```text
 workLoopSync
@@ -1523,17 +1609,7 @@ completeUnitOfWork
 completeWork
 ```
 
-这些入口帮助回答：
-
-- 当前正在处理哪个 Fiber？
-- 如何进入子节点？
-- 如何返回父节点？
-- 什么时候移动到兄弟节点？
-- 什么时候 Render 完成？
-
-### 7.15.4 从 Commit 进入 DOM 更新
-
-Commit 阶段可以关注：
+**Commit 阶段：**
 
 ```text
 commitRoot
@@ -1543,36 +1619,22 @@ commitLayoutEffects
 flushPassiveEffects
 ```
 
-这些名称用于建立阶段模型：
+**数据结构：**
 
 ```text
-Before Mutation
-  ↓
-Mutation
-  ↓
-Layout
-  ↓
-Passive Effects
+FiberNode
+FiberRootNode
+createFiber
+createWorkInProgress
+createHostRootFiber
+flags
+subtreeFlags
+lanes
+childLanes
+alternate
 ```
 
-实际内部流程会根据 React 版本、Effect 类型和更新情况有所变化。
-
-### 7.15.5 源码阅读顺序
-
-推荐按照下面的顺序阅读：
-
-```text
-1. FiberNode 数据结构
-2. createFiber、createWorkInProgress
-3. FiberRoot 和 HostRoot
-4. beginWork
-5. completeWork
-6. workLoopSync / workLoopConcurrent
-7. commitRoot
-8. scheduleUpdateOnFiber
-```
-
-不要一开始就试图读完整个 React 源码。先围绕一次简单 State 更新，记录对象如何创建、连接、遍历和提交。
+建议的源码阅读顺序是：先看 FiberNode 和 FiberRoot，再看 `createWorkInProgress` 如何建立两棵树，然后跟一次简单 State 更新经过 `beginWork`、`completeWork`、工作循环和 `commitRoot`。这些函数名会随版本变化，稳定主线是“更新进入 Root → 计算 WorkInProgress → 完成 Render → Commit 切换结果”。
 
 ## 7.16 用一个简化实现理解 Fiber
 
