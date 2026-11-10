@@ -105,7 +105,7 @@ function configureCustomContainers(md: any) {
     const token = tokens[index];
 
     if (token.info.trim() === 'mermaid') {
-      return `<div class="mermaid">${md.utils.escapeHtml(token.content)}</div>`;
+      return `<pre class="mermaid">${md.utils.escapeHtml(token.content)}</pre>`;
     }
 
     return defaultFence(tokens, index, options, env, self);
