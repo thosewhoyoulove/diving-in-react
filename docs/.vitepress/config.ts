@@ -136,6 +136,7 @@ export default defineConfig({
   title: '深入浅出 React',
   description: '从直觉、机制到源码，系统理解 React 18/19。',
   cleanUrls: true,
+  scrollOffset: '.VPNav',
   lastUpdated: true,
   themeConfig: {
     logo: { text: 'DR' },
